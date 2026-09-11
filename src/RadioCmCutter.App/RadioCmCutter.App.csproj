@@ -9,12 +9,18 @@
     <None Include="tools\ffmpeg\**\*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('tools\ffmpeg')" />
   </ItemGroup>
 
+  <!-- ウィンドウのタイトルバー/タスクバー表示用（実行ファイル自体のアイコンはApplicationIconで指定） -->
+  <ItemGroup>
+    <Resource Include="AppIcon.ico" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>

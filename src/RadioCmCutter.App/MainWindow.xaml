@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:RadioCmCutter.App"
         mc:Ignorable="d"
-        Title="ラジオCM自動カット" Height="800" Width="1150">
+        Title="ラジオCM自動カット" Height="800" Width="1150" Icon="AppIcon.ico">
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
