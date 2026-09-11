@@ -36,7 +36,6 @@ public class CmDetectionPipelineBatchTests
             new BoundaryDetectionOptions
             {
                 NoveltyWindowSeconds = 2.0, // 6秒の共有ブロックの端を解像できる短い窓
-                ChangeScorePercentile = 0.99,
                 MinBoundaryGapSeconds = 2.0,
             });
 
@@ -65,7 +64,6 @@ public class CmDetectionPipelineBatchTests
             new BoundaryDetectionOptions
             {
                 NoveltyWindowSeconds = 2.0,
-                ChangeScorePercentile = 0.99,
                 MinBoundaryGapSeconds = 2.0,
             });
 

@@ -47,6 +47,7 @@ public partial class MainWindow : Window
 
         _pipeline = new CmDetectionPipeline(historyStore: _historyStore);
         _mediaPlayer.MediaOpened += MediaPlayer_MediaOpened;
+        _mediaPlayer.MediaEnded += (_, _) => StopPlayback();
         _playheadTimer.Tick += PlayheadTimer_Tick;
     }
 
@@ -391,14 +392,39 @@ public partial class MainWindow : Window
 
     private static string FormatTime(TimeSpan t) => t.ToString(@"hh\:mm\:ss\.ff");
 
+    /// <summary>波形上でクリックされた位置から再生する（検出結果に関係なく自由に内容を確認するため、
+    /// 区間再生と違って停止するまで流し続ける）。</summary>
+    private void WaveformCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_selectedAudio is null) return;
+
+        var width = WaveformCanvas.ActualWidth;
+        if (width < 1) return;
+
+        var ratio = Math.Clamp(e.GetPosition(WaveformCanvas).X / width, 0, 1);
+        var position = TimeSpan.FromSeconds(ratio * _selectedAudio.Duration.TotalSeconds);
+
+        StartPlayback(position, stopAt: null);
+        FooterStatusText.Text = $"{FormatTime(position)} から再生中（停止ボタンで停止）";
+    }
+
     private void PlayAround(TimeSpan center)
     {
-        if (_selectedItem is null || _selectedAudio is null) return;
+        if (_selectedAudio is null) return;
 
         var totalSeconds = _selectedAudio.Duration.TotalSeconds;
         var start = TimeSpan.FromSeconds(Math.Max(0, center.TotalSeconds - PlaybackPreviewSeconds));
         var stop = TimeSpan.FromSeconds(Math.Min(totalSeconds, center.TotalSeconds + PlaybackPreviewSeconds));
-        _playbackStopAt = stop;
+
+        StartPlayback(start, stop);
+    }
+
+    /// <param name="stopAt">この位置で自動停止する。nullなら停止操作があるまで再生を続ける。</param>
+    private void StartPlayback(TimeSpan start, TimeSpan? stopAt)
+    {
+        if (_selectedItem is null) return;
+
+        _playbackStopAt = stopAt;
 
         if (_mediaOpenedForPath == _selectedItem.FilePath)
         {

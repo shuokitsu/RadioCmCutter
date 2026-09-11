@@ -1,4 +1,4 @@
-using RadioCmCutter.Core.Detection;
+﻿using RadioCmCutter.Core.Detection;
 using Xunit;
 
 namespace RadioCmCutter.Core.Tests;
@@ -17,7 +17,6 @@ public class BoundaryDetectorTests
         var boundaries = BoundaryDetector.DetectBoundaries(frames, new BoundaryDetectionOptions
         {
             NoveltyWindowSeconds = 4.0,
-            ChangeScorePercentile = 0.95,
             MinBoundaryGapSeconds = 2.0,
         });
 
@@ -37,7 +36,6 @@ public class BoundaryDetectorTests
         var boundaries = BoundaryDetector.DetectBoundaries(frames, new BoundaryDetectionOptions
         {
             NoveltyWindowSeconds = 4.0,
-            ChangeScorePercentile = 0.95,
             MinBoundaryGapSeconds = 2.0,
         });
 

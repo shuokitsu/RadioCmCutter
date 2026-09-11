@@ -6,10 +6,13 @@ public readonly record struct BoundaryPoint(TimeSpan Position, double Strength);
 
 public sealed class BoundaryDetectionOptions
 {
-    /// <summary>変化スコアがこの上位パーセンタイル以上のフレーム境界を「カット位置候補」とみなす。
-    /// この段階ではCM判定をしないため、取りこぼし（見逃し）を避ける方向に振っている
+    /// <summary>新規性スコアが「周囲の平均＋この値×全体のばらつき」を超えたら境界とみなす。
+    /// 小さくするほど境界が増える。この段階ではCM判定をしないため、取りこぼしを避ける方向に振っている
     /// （余分に拾った境界は、後段のCM判定で「CMではない」と分類されるだけで害が小さい）。</summary>
-    public double ChangeScorePercentile { get; init; } = 0.88;
+    public double PeakThresholdInStdDev { get; init; } = 0.8;
+
+    /// <summary>ピーク判定で「周囲」とみなす範囲（秒）。この範囲で最大かつ局所平均を上回る点のみ境界にする。</summary>
+    public double LocalContrastWindowSeconds { get; init; } = 4.0;
 
     /// <summary>境界の前後それぞれ何秒を平均して比較するか。
     /// 隣接フレーム間（0.5秒）の瞬間的な変化を見ると、連続した同一BGMの中でも
@@ -41,42 +44,123 @@ public static class BoundaryDetector
         if (frames.Count < (windowFrames * 2) + 1) return [];
 
         var scores = ComputeNoveltyScores(frames, windowFrames);
-        var threshold = Percentile(scores.Where(s => s > 0), options.ChangeScorePercentile);
-        if (threshold <= 0) return [];
-
-        var detected = new List<BoundaryPoint>();
-        for (var i = 0; i < frames.Count; i++)
-        {
-            if (scores[i] >= threshold)
-            {
-                detected.Add(new BoundaryPoint(frames[i].Start, scores[i] / threshold));
-            }
-        }
-
+        var detected = PickPeaks(frames, scores, options);
         return CollapseCloseBoundaries(detected, options.MinBoundaryGapSeconds);
     }
 
     /// <summary>
-    /// フレーム境界ごとの変化スコア。境界の前後 windowFrames 分のスペクトル形状の平均を取り、
-    /// その非類似度（1 - コサイン類似度）を返す。
+    /// フレームごとの新規性スコア（Footeのチェッカーボードカーネル法）。
+    /// 自己相似行列のうち対象フレーム周辺だけを見て、
+    ///   ・前半どうし／後半どうしの相似（＝それぞれの側のまとまり）
+    ///   ・前半と後半の相似（＝両側が同じ内容か）
+    /// の差を取る。前後の平均ベクトルを比べるだけでは、
+    /// 「トークに曲がかぶっている」ような “中身は雑多だが続いている” 区間でも
+    /// 平均のズレで反応してしまうが、この方式なら両側とも “まとまりが無い” と評価されるため
+    /// スコアが下がり、本当の切れ目（両側それぞれは均質で、互いに違う）だけが際立つ。
     /// 窓が確保できない先頭・末尾付近は0（＝境界候補にしない。ファイル端は別途扱う）。
+    /// 参考: J. Foote, "Automatic Audio Segmentation Using a Measure of Audio Novelty", ICME 2000.
     /// </summary>
     public static double[] ComputeNoveltyScores(IReadOnlyList<FrameFeatures> frames, int windowFrames)
     {
         var scores = new double[frames.Count];
-        for (var i = windowFrames; i + windowFrames <= frames.Count; i++)
-        {
-            var before = MeanSpectralVector(frames, i - windowFrames, i);
-            var after = MeanSpectralVector(frames, i, i + windowFrames);
+        var taper = BuildGaussianTaper(windowFrames);
 
-            double similarity = 0;
-            for (var k = 0; k < before.Length; k++)
+        for (var center = windowFrames; center + windowFrames <= frames.Count; center++)
+        {
+            double coherence = 0;
+            double crossSimilarity = 0;
+
+            for (var m = 0; m < windowFrames; m++)
             {
-                similarity += before[k] * after[k];
+                var beforeM = frames[center - 1 - m].SpectralVector;
+                var afterM = frames[center + m].SpectralVector;
+
+                for (var n = 0; n < windowFrames; n++)
+                {
+                    var weight = taper[m] * taper[n];
+                    coherence += weight * (Cosine(beforeM, frames[center - 1 - n].SpectralVector)
+                        + Cosine(afterM, frames[center + n].SpectralVector));
+                    crossSimilarity += weight * 2 * Cosine(beforeM, frames[center + n].SpectralVector);
+                }
             }
-            scores[i] = 1.0 - similarity;
+
+            scores[center] = Math.Max(0, coherence - crossSimilarity);
         }
+
         return scores;
+    }
+
+    /// <summary>
+    /// 新規性スコアの中から境界を選ぶ。ファイル全体の一律なパーセンタイルではなく、
+    /// 「周囲と比べて突出しているか」で判定する（Dixonのピーク選出法）。
+    /// 長時間の録音では、静かなトークと大音量の曲とで基準そのものが違うため、
+    /// 一律のしきい値では片方が過検出・もう片方が見逃しになる。
+    /// 参考: S. Dixon, "Onset Detection Revisited", DAFx-06.
+    /// </summary>
+    private static List<BoundaryPoint> PickPeaks(
+        IReadOnlyList<FrameFeatures> frames, double[] scores, BoundaryDetectionOptions options)
+    {
+        var positive = scores.Where(s => s > 0).ToArray();
+        if (positive.Length == 0) return [];
+
+        var mean = positive.Average();
+        var standardDeviation = Math.Sqrt(positive.Sum(s => (s - mean) * (s - mean)) / positive.Length);
+        if (standardDeviation <= 0) return [];
+
+        // 局所平均を取る窓（過去側を広めに取るのがDixonの方法）
+        var localWindow = Math.Max(1, (int)(options.LocalContrastWindowSeconds / FeatureExtractor.FrameSeconds));
+        var pastWindow = localWindow * 3;
+
+        var peaks = new List<BoundaryPoint>();
+        for (var i = 0; i < scores.Length; i++)
+        {
+            if (scores[i] <= 0) continue;
+
+            // 条件1: 近傍で最大であること
+            var isLocalMaximum = true;
+            for (var k = Math.Max(0, i - localWindow); k <= Math.Min(scores.Length - 1, i + localWindow); k++)
+            {
+                if (scores[k] > scores[i]) { isLocalMaximum = false; break; }
+            }
+            if (!isLocalMaximum) continue;
+
+            // 条件2: 周囲の平均を、ばらつきに対して十分上回ること
+            double localSum = 0;
+            var localCount = 0;
+            for (var k = Math.Max(0, i - pastWindow); k <= Math.Min(scores.Length - 1, i + localWindow); k++)
+            {
+                localSum += scores[k];
+                localCount++;
+            }
+            var localMean = localSum / localCount;
+            var margin = options.PeakThresholdInStdDev * standardDeviation;
+            if (scores[i] < localMean + margin) continue;
+
+            peaks.Add(new BoundaryPoint(frames[i].Start, (scores[i] - localMean) / standardDeviation));
+        }
+
+        return peaks;
+    }
+
+    /// <summary>カーネル中心から離れるほど重みを下げるガウス窓（Footeのテーパー）。
+    /// 遠く離れたフレームの影響で境界がぼやけるのを防ぐ。</summary>
+    private static double[] BuildGaussianTaper(int windowFrames)
+    {
+        var taper = new double[windowFrames];
+        var sigma = Math.Max(1.0, windowFrames / 2.0);
+        for (var i = 0; i < windowFrames; i++)
+        {
+            taper[i] = Math.Exp(-0.5 * (i / sigma) * (i / sigma));
+        }
+        return taper;
+    }
+
+    private static double Cosine(float[] a, float[] b)
+    {
+        double dot = 0;
+        var length = Math.Min(a.Length, b.Length);
+        for (var k = 0; k < length; k++) dot += a[k] * b[k];
+        return dot;
     }
 
     private static double[] MeanSpectralVector(IReadOnlyList<FrameFeatures> frames, int fromFrame, int toFrame)
