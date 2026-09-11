@@ -1,0 +1,88 @@
+<Window x:Class="RadioCmCutter.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:RadioCmCutter.App"
+        mc:Ignorable="d"
+        Title="ラジオCM自動カット" Height="760" Width="1150">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 入力・検出 -->
+        <Border Grid.Row="0" BorderBrush="#CCCCCC" BorderThickness="1" Padding="8" Margin="0,0,0,8">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <RadioButton x:Name="SingleFileModeRadio" Content="単一ファイル" GroupName="InputMode" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <RadioButton x:Name="DirectoryModeRadio" Content="フォルダ指定（連続実行）" GroupName="InputMode" VerticalAlignment="Center"/>
+                </StackPanel>
+                <DockPanel>
+                    <Button x:Name="BrowseInputButton" DockPanel.Dock="Right" Content="参照..." Width="80" Margin="6,0,0,0" Click="BrowseInputButton_Click"/>
+                    <Button x:Name="DetectButton" DockPanel.Dock="Right" Content="検出開始" Width="100" Margin="6,0,0,0" Click="DetectButton_Click"/>
+                    <TextBox x:Name="InputPathTextBox" VerticalContentAlignment="Center"/>
+                </DockPanel>
+                <TextBlock x:Name="StatusText" Margin="0,6,0,0" Foreground="#555555"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ファイル一覧＋検出結果 -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" BorderBrush="#CCCCCC" BorderThickness="1" Margin="0,0,8,0">
+                <ListBox x:Name="FilesListBox" SelectionChanged="FilesListBox_SelectionChanged"/>
+            </Border>
+
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="140"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock x:Name="SelectedFileHeaderText" Grid.Row="0" FontWeight="Bold" Margin="0,0,0,4"/>
+
+                <Border Grid.Row="1" BorderBrush="#CCCCCC" BorderThickness="1" Margin="0,0,0,8">
+                    <Canvas x:Name="WaveformCanvas" Background="#1E1E1E" SizeChanged="WaveformCanvas_SizeChanged"/>
+                </Border>
+
+                <DataGrid x:Name="CandidatesDataGrid" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False">
+                    <DataGrid.Columns>
+                        <DataGridCheckBoxColumn Header="カット" Binding="{Binding CutEnabled}" Width="50"/>
+                        <DataGridTextColumn Header="開始" Binding="{Binding Segment.Start}" Width="110" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="終了" Binding="{Binding Segment.End}" Width="110" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="長さ(秒)" Binding="{Binding Segment.Duration.TotalSeconds, StringFormat=F1}" Width="90" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="確信度" Binding="{Binding Confidence, StringFormat=P0}" Width="80" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="繰り返し回数" Binding="{Binding RepeatCount}" Width="100" IsReadOnly="True"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Grid>
+
+        <!-- 出力設定 -->
+        <Border Grid.Row="2" BorderBrush="#CCCCCC" BorderThickness="1" Padding="8" Margin="0,8,0,8">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                    <RadioButton x:Name="ConcatModeRadio" Content="カット＋自動再結合モード" GroupName="OutputMode" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <RadioButton x:Name="SplitOnlyModeRadio" Content="カットのみモード（動作確認用・結合しない）" GroupName="OutputMode" VerticalAlignment="Center"/>
+                </StackPanel>
+                <DockPanel>
+                    <Button x:Name="BrowseOutputButton" DockPanel.Dock="Right" Content="参照..." Width="80" Margin="6,0,0,0" Click="BrowseOutputButton_Click"/>
+                    <TextBlock DockPanel.Dock="Left" Text="出力先フォルダ:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBox x:Name="OutputFolderTextBox" VerticalContentAlignment="Center"/>
+                </DockPanel>
+                <Button x:Name="ExecuteCutButton" Content="この内容でカット実行" Width="180" HorizontalAlignment="Left" Margin="0,8,0,0" Click="ExecuteCutButton_Click"/>
+            </StackPanel>
+        </Border>
+
+        <TextBlock x:Name="FooterStatusText" Grid.Row="3" Foreground="#555555"/>
+    </Grid>
+</Window>

@@ -1,0 +1,17 @@
+## .NET
+bin/
+obj/
+*.user
+
+## Rider/VS
+.vs/
+.idea/
+
+## FFmpeg同梱バイナリ（サイズが大きいため別途取得しリポジトリには含めない想定）
+/tools/ffmpeg/
+
+## Test/coverage
+TestResults/
+
+## Claude Code 内部管理ファイル
+.claude/

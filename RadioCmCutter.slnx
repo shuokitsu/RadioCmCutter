@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RadioCmCutter.App/RadioCmCutter.App.csproj" />
+    <Project Path="src/RadioCmCutter.Core.Tests/RadioCmCutter.Core.Tests.csproj" />
+    <Project Path="src/RadioCmCutter.Core/RadioCmCutter.Core.csproj" />
+  </Folder>
+</Solution>
