@@ -19,11 +19,20 @@ public sealed class SegmentClassificationOptions
 
     /// <summary>最終的にこの秒数以下になった候補はCMとして意味がないため除外する。</summary>
     public double MinFinalCandidateSeconds { get; init; } = 5.0;
+
+    /// <summary>区間内にこの秒数以上の連続した繰り返し一致があれば、その区間を繰り返し由来とみなす。
+    /// <see cref="RepeatSegmentDetector.ComputeHits"/>の段階で既に最小run長（既定8秒）のふるいを
+    /// 通しているため、ここで同じ長さを再度要求すると条件の二重適用になり、
+    /// カット位置候補が1本の繰り返しrunの中に落ちただけで真陽性が消えてしまう
+    /// （実データでは9.2秒のrunが8.6秒+0.6秒に分断され、検出が失われた）。
+    /// そのため「繰り返しの音声が確かに含まれる」ことを確認できる短めの長さにしている
+    /// （散発的な単発ヒットで区間全体を繰り返し扱いにしないための下限）。</summary>
+    public double MinRepeatEvidenceRunSeconds { get; init; } = 2.0;
 }
 
 /// <summary>繰り返し検出の根拠（<see cref="RepeatSegmentDetector.ComputeHits"/>の結果）。
 /// 複数ファイル一括処理では、対象ファイルのフレーム範囲に切り出した配列を渡す。</summary>
-public readonly record struct RepeatEvidence(int[] HitCount, double[] HitScoreSum, double MinRunSeconds);
+public readonly record struct RepeatEvidence(int[] HitCount, double[] HitScoreSum);
 
 /// <summary>
 /// 共通のカット位置候補で区切られた各区間について、「CMかどうか」を判定する（第2段階）。
@@ -56,7 +65,7 @@ public static class SegmentClassifier
     {
         if (boundaries.Count < 2 || frames.Count == 0) return [];
 
-        var repeatMinRunFrames = ToFrameCount(repeat.MinRunSeconds);
+        var repeatMinRunFrames = ToFrameCount(options.MinRepeatEvidenceRunSeconds);
         var historyMinRunFrames = ToFrameCount(historyOptions.MinRunSeconds);
 
         var classified = new List<ClassifiedSegment>();

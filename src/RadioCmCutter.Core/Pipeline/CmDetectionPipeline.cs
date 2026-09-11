@@ -117,12 +117,11 @@ public sealed class CmDetectionPipeline(
         refined = BoundaryDetector.CollapseCloseBoundaries(refined, _boundaryOptions.MinBoundaryGapSeconds);
 
         var history = HistoryMatchDetector.ComputeScores(frames, _historyStore);
-        var repeat = new RepeatEvidence(hitCount, hitScoreSum, _repeatOptions.MinRunSeconds);
 
         return SegmentClassifier.Classify(
             frames,
             WithFileEdges(refined, audio.Duration),
-            repeat,
+            new RepeatEvidence(hitCount, hitScoreSum),
             history,
             _historyOptions,
             _classificationOptions);

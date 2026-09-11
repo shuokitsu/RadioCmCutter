@@ -1,4 +1,4 @@
-using RadioCmCutter.Core.Detection;
+﻿using RadioCmCutter.Core.Detection;
 using RadioCmCutter.Core.Models;
 using Xunit;
 
@@ -26,7 +26,7 @@ public class SegmentClassifierTests
         var candidates = SegmentClassifier.Classify(
             frames,
             [Boundary(0), Boundary(40), Boundary(60)],
-            new RepeatEvidence(hitCount, hitScoreSum, MinRunSeconds: 8.0),
+            new RepeatEvidence(hitCount, hitScoreSum),
             HistoryMatchScores.Empty(frames.Count),
             new HistoryMatchOptions(),
             new SegmentClassificationOptions());
@@ -50,7 +50,7 @@ public class SegmentClassifierTests
         var candidates = SegmentClassifier.Classify(
             frames,
             [Boundary(0), Boundary(20), Boundary(45), Boundary(60)],
-            new RepeatEvidence(new int[frames.Count], new double[frames.Count], MinRunSeconds: 8.0),
+            new RepeatEvidence(new int[frames.Count], new double[frames.Count]),
             HistoryMatchScores.Empty(frames.Count),
             new HistoryMatchOptions(),
             new SegmentClassificationOptions());
@@ -88,7 +88,7 @@ public class SegmentClassifierTests
         var candidates = SegmentClassifier.Classify(
             frames,
             [Boundary(0), Boundary(20), Boundary(40), Boundary(60)],
-            new RepeatEvidence(hitCount, hitScoreSum, MinRunSeconds: 8.0),
+            new RepeatEvidence(hitCount, hitScoreSum),
             HistoryMatchScores.Empty(frames.Count),
             new HistoryMatchOptions(),
             new SegmentClassificationOptions());
@@ -96,6 +96,61 @@ public class SegmentClassifierTests
         var repeated = Assert.Single(candidates, c => c.Reason == DetectionReason.RepeatedContent);
         Assert.Equal(TimeSpan.Zero, repeated.Segment.Start);
         Assert.Equal(TimeSpan.FromSeconds(40), repeated.Segment.End);
+    }
+
+    [Fact]
+    public void Classify_RepeatRunSplitByBoundaryIntoShortPieces_IsStillDetected()
+    {
+        // 実データで検出が失われたケースの再現: 9.2秒の繰り返しrunの中にカット位置候補が落ち、
+        // 8.6秒+0.6秒に分断されていた。ComputeHits の段階で既に最小run長のふるいを
+        // 通しているため、区間ごとに再度8秒を要求すると真陽性が消えてしまう。
+        var frames = BuildFrames(120);
+        var hitCount = new int[frames.Count];
+        var hitScoreSum = new double[frames.Count];
+        for (var i = 20; i < 38; i++) // 10〜19秒（9秒分）
+        {
+            hitCount[i] = 2;
+            hitScoreSum[i] = 2 * 0.97;
+        }
+
+        var candidates = SegmentClassifier.Classify(
+            frames,
+            [Boundary(0), Boundary(15), Boundary(30)], // 15秒でrunを分断（各区間の一致は5秒と4秒）
+            new RepeatEvidence(hitCount, hitScoreSum),
+            HistoryMatchScores.Empty(frames.Count),
+            new HistoryMatchOptions(),
+            new SegmentClassificationOptions());
+
+        // 分断後の一致長はどちらも8秒未満だが、両側とも繰り返し由来と判定され結合されて1件になる
+        // （8秒を再度要求していた旧実装では1件も検出されなかった）
+        var repeated = Assert.Single(candidates, c => c.Reason == DetectionReason.RepeatedContent);
+        Assert.Equal(TimeSpan.Zero, repeated.Segment.Start);
+        Assert.Equal(TimeSpan.FromSeconds(30), repeated.Segment.End);
+        Assert.True(repeated.CutEnabled);
+    }
+
+    [Fact]
+    public void Classify_ScatteredSingleFrameHits_DoNotMakeSegmentRepeated()
+    {
+        // 散発的な単発ヒットだけでは区間全体を繰り返し扱いにしない（連続性を要求する）
+        var frames = BuildFrames(120);
+        var hitCount = new int[frames.Count];
+        var hitScoreSum = new double[frames.Count];
+        for (var i = 10; i < 60; i += 5) // 1フレームずつ飛び飛び
+        {
+            hitCount[i] = 1;
+            hitScoreSum[i] = 0.95;
+        }
+
+        var candidates = SegmentClassifier.Classify(
+            frames,
+            [Boundary(0), Boundary(30), Boundary(60)],
+            new RepeatEvidence(hitCount, hitScoreSum),
+            HistoryMatchScores.Empty(frames.Count),
+            new HistoryMatchOptions(),
+            new SegmentClassificationOptions());
+
+        Assert.DoesNotContain(candidates, c => c.Reason == DetectionReason.RepeatedContent);
     }
 
     [Fact]
@@ -113,7 +168,7 @@ public class SegmentClassifierTests
         var candidates = SegmentClassifier.Classify(
             frames,
             [Boundary(0), Boundary(20), Boundary(30)],
-            new RepeatEvidence(new int[frames.Count], new double[frames.Count], MinRunSeconds: 8.0),
+            new RepeatEvidence(new int[frames.Count], new double[frames.Count]),
             new HistoryMatchScores(confirmed, rejected),
             new HistoryMatchOptions(),
             new SegmentClassificationOptions());
@@ -139,7 +194,7 @@ public class SegmentClassifierTests
         var candidates = SegmentClassifier.Classify(
             frames,
             [Boundary(0), Boundary(20), Boundary(30)],
-            new RepeatEvidence(new int[frames.Count], new double[frames.Count], MinRunSeconds: 8.0),
+            new RepeatEvidence(new int[frames.Count], new double[frames.Count]),
             new HistoryMatchScores(confirmed, rejected),
             new HistoryMatchOptions(),
             new SegmentClassificationOptions());
@@ -156,7 +211,7 @@ public class SegmentClassifierTests
         var candidates = SegmentClassifier.Classify(
             frames,
             [Boundary(0), Boundary(700)],
-            new RepeatEvidence(new int[frames.Count], new double[frames.Count], MinRunSeconds: 8.0),
+            new RepeatEvidence(new int[frames.Count], new double[frames.Count]),
             HistoryMatchScores.Empty(frames.Count),
             new HistoryMatchOptions(),
             new SegmentClassificationOptions());
@@ -180,7 +235,7 @@ public class SegmentClassifierTests
         var candidates = SegmentClassifier.Classify(
             frames,
             [Boundary(0), Boundary(700)],
-            new RepeatEvidence(hitCount, hitScoreSum, MinRunSeconds: 8.0),
+            new RepeatEvidence(hitCount, hitScoreSum),
             HistoryMatchScores.Empty(frames.Count),
             new HistoryMatchOptions(),
             new SegmentClassificationOptions());
@@ -203,8 +258,7 @@ public class SegmentClassifierTests
                 Start = start,
                 End = start + TimeSpan.FromSeconds(FrameSeconds),
                 Vector = [1f],
-                Rms = 0.1,
-                SpectralChangeMagnitude = 0,
+                SpectralVector = [1f],
             });
         }
         return frames;

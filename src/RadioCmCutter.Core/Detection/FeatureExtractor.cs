@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using RadioCmCutter.Core.Ffmpeg;
 
 namespace RadioCmCutter.Core.Detection;
@@ -28,19 +28,15 @@ public static class FeatureExtractor
         var window = BuildHammingWindow(frameSize);
 
         var rawBandEnergies = new List<float[]>();
-        var rmsValues = new List<double>();
         var starts = new List<TimeSpan>();
         var ends = new List<TimeSpan>();
 
         for (var offset = 0; offset + frameSize <= samples.Length; offset += frameSize)
         {
             var buffer = new Complex[frameSize];
-            double sumSquares = 0;
             for (var i = 0; i < frameSize; i++)
             {
-                var s = samples[offset + i];
-                sumSquares += s * s;
-                buffer[i] = new Complex(s * window[i], 0);
+                buffer[i] = new Complex(samples[offset + i] * window[i], 0);
             }
 
             Fft.Forward(buffer);
@@ -58,7 +54,6 @@ public static class FeatureExtractor
             }
 
             rawBandEnergies.Add(bandEnergies);
-            rmsValues.Add(Math.Sqrt(sumSquares / frameSize));
             starts.Add(TimeSpan.FromSeconds(offset / (double)sampleRate));
             ends.Add(TimeSpan.FromSeconds((offset + frameSize) / (double)sampleRate));
         }
@@ -78,10 +73,6 @@ public static class FeatureExtractor
                 }
             }
 
-            double deltaNormSquared = 0;
-            foreach (var d in delta) deltaNormSquared += d * d;
-            var spectralChangeMagnitude = Math.Sqrt(deltaNormSquared);
-
             Normalize(delta);
 
             var combined = new float[BandCount * 2];
@@ -91,8 +82,10 @@ public static class FeatureExtractor
 
             frames.Add(new FrameFeatures
             {
-                Start = starts[i], End = ends[i], Vector = combined, Rms = rmsValues[i],
-                SpectralChangeMagnitude = spectralChangeMagnitude,
+                Start = starts[i],
+                End = ends[i],
+                Vector = combined,
+                SpectralVector = spectral,
             });
         }
 

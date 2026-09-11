@@ -1,4 +1,4 @@
-using RadioCmCutter.Core.Detection;
+﻿using RadioCmCutter.Core.Detection;
 using RadioCmCutter.Core.Ffmpeg;
 using RadioCmCutter.Core.Models;
 using RadioCmCutter.Core.Pipeline;
@@ -35,6 +35,7 @@ public class CmDetectionPipelineBatchTests
             },
             new BoundaryDetectionOptions
             {
+                NoveltyWindowSeconds = 2.0, // 6秒の共有ブロックの端を解像できる短い窓
                 ChangeScorePercentile = 0.99,
                 MinBoundaryGapSeconds = 2.0,
             });
@@ -61,7 +62,12 @@ public class CmDetectionPipelineBatchTests
 
         var pipeline = new CmDetectionPipeline(
             new RepeatDetectionOptions { SimilarityThreshold = 0.99, MinRunSeconds = 3.0, MinSeparationSeconds = 15.0 },
-            new BoundaryDetectionOptions { ChangeScorePercentile = 0.99, MinBoundaryGapSeconds = 2.0 });
+            new BoundaryDetectionOptions
+            {
+                NoveltyWindowSeconds = 2.0,
+                ChangeScorePercentile = 0.99,
+                MinBoundaryGapSeconds = 2.0,
+            });
 
         var results = pipeline.ClassifyDecodedBatch([BuildAudio(30), BuildAudio(24)], [framesA, framesB]);
 
@@ -78,7 +84,9 @@ public class CmDetectionPipelineBatchTests
     }
 
     /// <summary>共有ブロックのフレームは全ファイルで同一ベクトル、それ以外はファイル・位置ごとに固有の
-    /// ベクトルにする（偶然の一致を避けるため）。ブロック境界にはスペクトル変化のスパイクを置く。</summary>
+    /// ベクトルにする（偶然の一致を避けるため）。
+    /// カット位置候補は前後の窓の平均スペクトルの違いから検出されるので、
+    /// 共有ブロックの内外でスペクトル形状（<see cref="FrameFeatures.SpectralVector"/>）を変える。</summary>
     private static List<FrameFeatures> BuildFrames(int totalFrames, (int Start, int End) sharedBlock, int fileTag)
     {
         var frames = new List<FrameFeatures>(totalFrames);
@@ -88,15 +96,17 @@ public class CmDetectionPipelineBatchTests
             var vector = new float[VectorDims];
             vector[isShared ? 0 : 1 + (fileTag * totalFrames) + i] = 1f;
 
-            var isBlockEdge = i == sharedBlock.Start || i == sharedBlock.End;
+            // 共有ブロック内は帯域1、外は帯域0（前後の窓で平均すると明確に異なる）
+            var spectral = new float[2];
+            spectral[isShared ? 1 : 0] = 1f;
+
             var start = TimeSpan.FromSeconds(i * FrameSeconds);
             frames.Add(new FrameFeatures
             {
                 Start = start,
                 End = start + TimeSpan.FromSeconds(FrameSeconds),
                 Vector = vector,
-                Rms = 0.1,
-                SpectralChangeMagnitude = isBlockEdge ? 10.0 : 0.1,
+                SpectralVector = spectral,
             });
         }
         return frames;

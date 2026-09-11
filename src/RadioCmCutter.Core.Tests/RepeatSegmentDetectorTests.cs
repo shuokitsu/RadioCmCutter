@@ -1,4 +1,4 @@
-using RadioCmCutter.Core.Detection;
+﻿using RadioCmCutter.Core.Detection;
 using Xunit;
 
 namespace RadioCmCutter.Core.Tests;
@@ -78,8 +78,7 @@ public class RepeatSegmentDetectorTests
                 Start = start,
                 End = start + TimeSpan.FromSeconds(FrameSeconds),
                 Vector = vector,
-                Rms = 0.1,
-                SpectralChangeMagnitude = 0,
+                SpectralVector = vector,
             });
         }
         return frames;

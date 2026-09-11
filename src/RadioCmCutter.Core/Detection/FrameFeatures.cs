@@ -1,18 +1,18 @@
 namespace RadioCmCutter.Core.Detection;
 
-/// <summary>1フレーム分の音響特徴。繰り返し検出（コサイン類似度）に使う。</summary>
+/// <summary>1フレーム分の音響特徴。</summary>
 public sealed class FrameFeatures
 {
     public required TimeSpan Start { get; init; }
     public required TimeSpan End { get; init; }
 
-    /// <summary>対数帯域エネルギーをL2正規化したベクトル。</summary>
+    /// <summary>対数帯域エネルギー＋直前フレームからの変化量（デルタ）を連結しL2正規化したベクトル。
+    /// 繰り返し検出・履歴照合のコサイン類似度に使う。デルタを含めるのは、一定のトーンやノイズのように
+    /// 時間変化しない音が「自分自身との繰り返し」と誤判定されるのを防ぐため。</summary>
     public required float[] Vector { get; init; }
 
-    /// <summary>フレーム内のRMS（0〜1程度）。音量境界の補助判定に使う。</summary>
-    public required double Rms { get; init; }
-
-    /// <summary>直前フレームからの対数帯域エネルギーの変化量（L2ノルム、正規化前の絶対値）。
-    /// 会話↔曲のような音色の急変を検出するために使う（0は変化なし、先頭フレームは常に0）。</summary>
-    public required double SpectralChangeMagnitude { get; init; }
+    /// <summary>そのフレーム単体の対数帯域エネルギーをL2正規化したベクトル（スペクトル形状）。
+    /// カット位置候補の検出で、境界の前後を窓で平均して比較するのに使う
+    /// （デルタ成分は窓内で平均するとほぼ打ち消し合うため、こちらを使う）。</summary>
+    public required float[] SpectralVector { get; init; }
 }
