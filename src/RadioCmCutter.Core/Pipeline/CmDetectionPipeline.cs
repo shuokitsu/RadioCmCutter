@@ -19,6 +19,9 @@ public sealed class CmDetectionPipeline(
     private readonly TransitionDetectionOptions _transitionOptions = transitionOptions ?? new TransitionDetectionOptions();
     private readonly CmHistoryStore? _historyStore = historyStore;
 
+    /// <summary>境界補正等で結果的にこの秒数以下になった候補はCMとして意味がないため除外する。</summary>
+    private const double MinFinalCandidateSeconds = 5.0;
+
     public async Task<DetectionResult> DetectSingleAsync(string filePath, CancellationToken cancellationToken = default)
     {
         var audio = await AudioDecoder.DecodeForAnalysisAsync(filePath, cancellationToken);
@@ -31,9 +34,10 @@ public sealed class CmDetectionPipeline(
             var repeatCandidates = RepeatSegmentDetector.Detect(frames, _repeatOptions);
             var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
             var historyCandidates = _historyStore is null ? [] : HistoryMatchDetector.Detect(frames, _historyStore);
-            var merged = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates));
+            var merged = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates), _transitionOptions);
             LoudnessBoundaryRefiner.Refine(merged, audio);
-            return merged;
+            ReclassifyAcousticCandidatesByFinalLength(merged, _transitionOptions);
+            return FilterOutTooShort(merged);
         }, cancellationToken);
 
         return new DetectionResult
@@ -82,14 +86,15 @@ public sealed class CmDetectionPipeline(
                 var repeatCandidates = RepeatSegmentDetector.BuildCandidates(frames, hitCountSlice, hitScoreSumSlice);
                 var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
                 var historyCandidates = _historyStore is null ? [] : HistoryMatchDetector.Detect(frames, _historyStore);
-                var candidates = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates));
+                var candidates = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates), _transitionOptions);
                 LoudnessBoundaryRefiner.Refine(candidates, decodedAudios[fileIndex]);
+                ReclassifyAcousticCandidatesByFinalLength(candidates, _transitionOptions);
 
                 results.Add(new DetectionResult
                 {
                     SourceFilePath = filePaths[fileIndex],
                     TotalDuration = decodedAudios[fileIndex].Duration,
-                    Candidates = candidates,
+                    Candidates = FilterOutTooShort(candidates),
                 });
             }
 
@@ -99,7 +104,8 @@ public sealed class CmDetectionPipeline(
 
     /// <summary>重複・隣接する候補区間を1つにまとめる（確信度は最大値、繰り返し回数は合算）。
     /// 繰り返し検出と急変点検出の両方が同じCMを検出した場合に、一覧に二重で出さないようにする。</summary>
-    private static List<CmCandidate> MergeOverlappingCandidates(IEnumerable<CmCandidate> candidates)
+    private static List<CmCandidate> MergeOverlappingCandidates(
+        IEnumerable<CmCandidate> candidates, TransitionDetectionOptions transitionOptions)
     {
         var sorted = candidates.OrderBy(c => c.Segment.Start).ToList();
         var merged = new List<CmCandidate>();
@@ -109,14 +115,37 @@ public sealed class CmDetectionPipeline(
             {
                 var last = merged[^1];
                 var newEnd = candidate.Segment.End > last.Segment.End ? candidate.Segment.End : last.Segment.End;
-                // どちらかが繰り返し検出由来なら、最も信頼できる根拠として優先する
+                // どちらかが繰り返し検出／過去の確定履歴一致由来なら、最も信頼できる根拠として優先する
                 var isRepeated = last.Reason == DetectionReason.RepeatedContent || candidate.Reason == DetectionReason.RepeatedContent;
+                var isHistoryMatch = !isRepeated
+                    && (last.Reason == DetectionReason.HistoryMatch || candidate.Reason == DetectionReason.HistoryMatch);
 
                 last.Segment = new AudioSegment(last.Segment.Start, newEnd);
                 last.Confidence = Math.Max(last.Confidence, candidate.Confidence);
                 last.RepeatCount += candidate.RepeatCount;
-                last.Reason = isRepeated ? DetectionReason.RepeatedContent : last.Reason;
-                last.CutEnabled = last.CutEnabled || candidate.CutEnabled || isRepeated;
+
+                if (isRepeated)
+                {
+                    last.Reason = DetectionReason.RepeatedContent;
+                    last.CutEnabled = true;
+                }
+                else if (isHistoryMatch)
+                {
+                    last.Reason = DetectionReason.HistoryMatch;
+                    last.CutEnabled = true;
+                }
+                else
+                {
+                    // 音響急変のみに基づく候補は、結合前の断片ではなく結合後の最終的な長さで
+                    // 「CM尺相当／長尺」を再判定する（結合で長くなった区間が古い判定のまま
+                    // カットON扱いになる誤り＝長い本編区間の誤カットを防ぐ）。
+                    var isCmLength = TransitionSegmentDetector.IsCloseToSpotLength(
+                        last.Segment.Duration.TotalSeconds,
+                        transitionOptions.SpotUnitSeconds,
+                        transitionOptions.SpotLengthToleranceSeconds);
+                    last.Reason = isCmLength ? DetectionReason.AcousticTransitionCmLength : DetectionReason.AcousticTransitionLong;
+                    last.CutEnabled = false;
+                }
             }
             else
             {
@@ -133,4 +162,30 @@ public sealed class CmDetectionPipeline(
 
         return merged;
     }
+
+    /// <summary>音量境界補正（<see cref="LoudnessBoundaryRefiner"/>）は開始・終了を最大±3秒ずつ動かすため、
+    /// 結合直後は「CM尺相当」だった区間が補正後には数秒伸び、CMスポット尺の許容範囲から外れることがある。
+    /// 音響急変由来（繰り返し検出・履歴一致以外）の候補は、補正後の最終的な長さで再判定する。</summary>
+    private static void ReclassifyAcousticCandidatesByFinalLength(
+        IReadOnlyList<CmCandidate> candidates, TransitionDetectionOptions transitionOptions)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (candidate.Reason != DetectionReason.AcousticTransitionCmLength
+                && candidate.Reason != DetectionReason.AcousticTransitionLong)
+            {
+                continue;
+            }
+
+            var isCmLength = TransitionSegmentDetector.IsCloseToSpotLength(
+                candidate.Segment.Duration.TotalSeconds,
+                transitionOptions.SpotUnitSeconds,
+                transitionOptions.SpotLengthToleranceSeconds);
+            candidate.Reason = isCmLength ? DetectionReason.AcousticTransitionCmLength : DetectionReason.AcousticTransitionLong;
+            candidate.CutEnabled = false;
+        }
+    }
+
+    private static List<CmCandidate> FilterOutTooShort(List<CmCandidate> candidates) =>
+        candidates.Where(c => c.Segment.Duration.TotalSeconds > MinFinalCandidateSeconds).ToList();
 }

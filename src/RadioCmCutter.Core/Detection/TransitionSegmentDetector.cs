@@ -75,20 +75,22 @@ public static class TransitionSegmentDetector
             candidates.Add(new CmCandidate
             {
                 Segment = new AudioSegment(frames[startIdx].Start, frames[endIdx].Start),
-                // CM尺（15秒の倍数）から外れる長尺の区間は、番組内の音楽（本編）である可能性を考慮して確信度を下げ、
-                // デフォルトではカット対象にしない（ユーザーが必要に応じて手動でONにする）。
+                // CM尺（15秒の倍数）から外れる長尺の区間は、番組内の音楽（本編）である可能性を考慮して確信度を下げる。
                 Confidence = isCmLength ? baseConfidence : baseConfidence * 0.6,
                 RepeatCount = 0,
                 Reason = isCmLength ? DetectionReason.AcousticTransitionCmLength : DetectionReason.AcousticTransitionLong,
-                CutEnabled = isCmLength,
+                // 音響急変＋長さ一致だけでは実データ検証でも誤検出（本編の曲・コーナー転換等）が多かったため、
+                // 長さ一致・長尺のいずれもデフォルトではカット対象にしない（ユーザーが必要に応じて手動でONにする）。
+                CutEnabled = false,
             });
         }
 
         return candidates;
     }
 
-    /// <summary>durationが unitSeconds の倍数（15,30,45,60...）にtoleranceSeconds以内で近いかどうか。</summary>
-    private static bool IsCloseToSpotLength(double durationSeconds, double unitSeconds, double toleranceSeconds)
+    /// <summary>durationが unitSeconds の倍数（15,30,45,60...）にtoleranceSeconds以内で近いかどうか。
+    /// 候補結合後（<see cref="Pipeline.CmDetectionPipeline"/>）の長さ再判定でも使うためinternal公開。</summary>
+    internal static bool IsCloseToSpotLength(double durationSeconds, double unitSeconds, double toleranceSeconds)
     {
         if (unitSeconds <= 0) return false;
         var remainder = durationSeconds % unitSeconds;

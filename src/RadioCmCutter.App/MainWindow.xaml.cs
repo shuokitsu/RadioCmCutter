@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -42,10 +43,17 @@ public partial class MainWindow : Window
         InitializeComponent();
         Loaded += MainWindow_Loaded;
 
+        Title = $"{Title}　[build: {GetBuildTimestamp():yyyy-MM-dd HH:mm:ss}]";
+
         _pipeline = new CmDetectionPipeline(historyStore: _historyStore);
         _mediaPlayer.MediaOpened += MediaPlayer_MediaOpened;
         _playheadTimer.Tick += PlayheadTimer_Tick;
     }
+
+    /// <summary>リビルドが実際に反映されているかをタイトルバーで確認できるよう、
+    /// 実行中のexe/dllのファイル更新日時をビルド時刻として表示する。</summary>
+    private static DateTime GetBuildTimestamp() =>
+        File.GetLastWriteTime(System.Reflection.Assembly.GetExecutingAssembly().Location);
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
@@ -349,6 +357,39 @@ public partial class MainWindow : Window
     {
         StopPlayback();
     }
+
+    private void CopyRowsButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopySelectedRowsToClipboard();
+    }
+
+    private void CandidatesDataGrid_CopyExecuted(object sender, ExecutedRoutedEventArgs e)
+    {
+        CopySelectedRowsToClipboard();
+    }
+
+    /// <summary>選択中の行を、デバッグ報告等でそのまま貼り付けられるテキスト形式でクリップボードにコピーする。</summary>
+    private void CopySelectedRowsToClipboard()
+    {
+        var rows = CandidatesDataGrid.SelectedItems.Cast<TimelineSegmentRow>()
+            .OrderBy(r => r.Segment.Start)
+            .ToList();
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        var lines = rows.Select(r =>
+            $"{FormatTime(r.Segment.Start)} - {FormatTime(r.Segment.End)} " +
+            $"({r.Segment.Duration.TotalSeconds:F1}秒) {r.Kind} " +
+            $"確信度{r.Confidence:P0} 繰り返し{r.RepeatCount}回 " +
+            $"カット{(r.CutEnabled ? "ON" : "OFF")}");
+
+        Clipboard.SetText(string.Join(Environment.NewLine, lines));
+        FooterStatusText.Text = $"{rows.Count}行をクリップボードにコピーしました。";
+    }
+
+    private static string FormatTime(TimeSpan t) => t.ToString(@"hh\:mm\:ss\.ff");
 
     private void PlayAround(TimeSpan center)
     {

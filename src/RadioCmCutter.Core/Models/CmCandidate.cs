@@ -31,6 +31,8 @@ public sealed class CmCandidate
     public required DetectionReason Reason { get; set; }
 
     /// <summary>この区間をカット対象とするか（GUI上でユーザーがON/OFF切替可能）。
-    /// 繰り返し検出・CM尺相当の急変検出はデフォルトON、長尺の音楽（番組内の可能性）はデフォルトOFF。</summary>
+    /// 裏付けのある根拠（繰り返し検出・過去の確定履歴一致）はデフォルトON。
+    /// 音響急変＋長さ一致のみの候補は、実データ検証で本編（曲・コーナー転換等）の誤検出が
+    /// 多かったため、CM尺相当・長尺のいずれもデフォルトOFF（ユーザーが手動でONにする）。</summary>
     public bool CutEnabled { get; set; } = true;
 }

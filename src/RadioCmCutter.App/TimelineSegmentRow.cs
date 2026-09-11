@@ -10,7 +10,12 @@ namespace RadioCmCutter.App;
 /// </summary>
 public sealed class TimelineSegmentRow
 {
-    public required AudioSegment Segment { get; init; }
+    /// <summary>検出境界のズレ等で生じるごく短い「検出外」区間は、単独表示せず前後どちらかの
+    /// CM候補に吸収させる。この秒数以下の隙間のみが対象（意味のありそうな短い非CM区間まで
+    /// 飲み込まないよう小さめに設定）。</summary>
+    private const double MaxBridgedGapSeconds = 2.0;
+
+    public required AudioSegment Segment { get; set; }
     public bool CutEnabled { get; set; }
     public double Confidence { get; init; }
     public int RepeatCount { get; init; }
@@ -48,6 +53,46 @@ public sealed class TimelineSegmentRow
             IsDetectedCandidate = false,
         });
 
-        return candidateRows.Concat(gapRows).OrderBy(r => r.Segment.Start).ToList();
+        var rows = candidateRows.Concat(gapRows).OrderBy(r => r.Segment.Start).ToList();
+        return BridgeTinyGaps(rows);
+    }
+
+    /// <summary>検出境界のズレによるごく短い「検出外」の隙間を、前後のCM候補の一方に吸収させて
+    /// 一覧から消す。両隣にカット候補がある場合はカットOFF側（安全側）を優先して延長し、
+    /// 片方しか候補がない場合はそちらへ延長する。</summary>
+    private static List<TimelineSegmentRow> BridgeTinyGaps(List<TimelineSegmentRow> rows)
+    {
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            if (row.IsDetectedCandidate || row.Segment.Duration.TotalSeconds > MaxBridgedGapSeconds)
+            {
+                continue;
+            }
+
+            var prev = i > 0 ? rows[i - 1] : null;
+            var next = i < rows.Count - 1 ? rows[i + 1] : null;
+            var prevIsCandidate = prev is { IsDetectedCandidate: true };
+            var nextIsCandidate = next is { IsDetectedCandidate: true };
+            if (!prevIsCandidate && !nextIsCandidate)
+            {
+                continue;
+            }
+
+            var extendPrev = prevIsCandidate && (!nextIsCandidate || !prev!.CutEnabled || next!.CutEnabled);
+            if (extendPrev)
+            {
+                prev!.Segment = new AudioSegment(prev.Segment.Start, row.Segment.End);
+            }
+            else
+            {
+                next!.Segment = new AudioSegment(row.Segment.Start, next.Segment.End);
+            }
+
+            rows.RemoveAt(i);
+            i--;
+        }
+
+        return rows;
     }
 }

@@ -66,10 +66,17 @@
                     <TextBlock Text="選択中の区間を再生（前後1秒）:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#555555"/>
                     <Button x:Name="PlayStartButton" Content="開始位置を再生" Width="110" Margin="0,0,6,0" Click="PlayStartButton_Click"/>
                     <Button x:Name="PlayEndButton" Content="終了位置を再生" Width="110" Margin="0,0,6,0" Click="PlayEndButton_Click"/>
-                    <Button x:Name="StopPlaybackButton" Content="停止" Width="70" Click="StopPlaybackButton_Click"/>
+                    <Button x:Name="StopPlaybackButton" Content="停止" Width="70" Margin="0,0,16,0" Click="StopPlaybackButton_Click"/>
+                    <Button x:Name="CopyRowsButton" Content="選択行をコピー（デバッグ報告用）" Width="200" Click="CopyRowsButton_Click"/>
                 </StackPanel>
 
-                <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False">
+                <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" SelectionMode="Extended" SelectionUnit="FullRow">
+                    <DataGrid.InputBindings>
+                        <KeyBinding Key="C" Modifiers="Ctrl" Command="ApplicationCommands.Copy"/>
+                    </DataGrid.InputBindings>
+                    <DataGrid.CommandBindings>
+                        <CommandBinding Command="ApplicationCommands.Copy" Executed="CandidatesDataGrid_CopyExecuted"/>
+                    </DataGrid.CommandBindings>
                     <DataGrid.Columns>
                         <DataGridCheckBoxColumn Header="カット" Binding="{Binding CutEnabled}" Width="50"/>
                         <DataGridTextColumn Header="開始" Binding="{Binding Segment.Start}" Width="110" IsReadOnly="True"/>
