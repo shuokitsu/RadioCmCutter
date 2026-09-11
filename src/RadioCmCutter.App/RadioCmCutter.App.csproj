@@ -4,6 +4,11 @@
     <ProjectReference Include="..\RadioCmCutter.Core\RadioCmCutter.Core.csproj" />
   </ItemGroup>
 
+  <!-- 同梱するffmpeg.exe/ffprobe.exe（別途 tools/ffmpeg に配置。無い場合はビルドに影響しない） -->
+  <ItemGroup>
+    <None Include="tools\ffmpeg\**\*" CopyToOutputDirectory="PreserveNewest" Condition="Exists('tools\ffmpeg')" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>

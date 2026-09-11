@@ -100,25 +100,44 @@
 - `dotnet build RadioCmCutter.slnx` → 成功（0警告0エラー）
 - `dotnet test src/RadioCmCutter.Core.Tests/...` → 10件全て成功（FFT・繰り返し検出・区間補集合計算の単体テスト）
 - `dotnet run --project src/RadioCmCutter.App/...` → クラッシュせず起動・プロセス安定稼働を確認
-- **未確認**: 実際の画面操作（ファイル選択・検出・波形表示・カット実行）そのものの動作。Claude Code側にネイティブWPFウィンドウを操作する手段がないため、ユーザー自身による実機確認が必要
-- **未確認**: FFmpeg実行（バイナリ未配置のため。下記参照）
+- **未確認**: 実際の画面操作（ファイル選択・検出・波形表示・カット実行）そのものの動作。Claude Code側にネイティブWPFウィンドウを操作する手段がないため、ユーザー自身による実機確認が必要（起動自体・レイアウトはユーザーがスクリーンショットで確認済み。2026-09-11）
+- **確認済み**: FFmpeg同梱・実行、およびCore側パイプライン（デコード→特徴抽出→繰り返し検出→境界補正→カット）のエンドツーエンド動作。合成音声（ノイズ番組＋同一CMトーン2回）で検証し、修正後は正しく検出できることを確認（下記「検出アルゴリズムの改善」参照）。検証はリポジトリ外の使い捨てコンソールプロジェクトで実施し、本体には残していない
+
+### 検出アルゴリズムの改善（2026-09-11）
+
+実データ相当の検証（ノイズ番組＋同一トーンCM2回、を合成音声で再現）で、**当初の実装には重大な誤検出バグがあった**ことが判明し、修正済み。
+
+- **問題**: `FeatureExtractor`が「その瞬間のスペクトル形状」だけを特徴にしていたため、一定トーンや同じ統計的特徴を持つノイズ（ピンクノイズ等）のように**時間的に変化しない音**が、自分自身と誤って「繰り返し」判定されてしまい、本当のCM（トーンを2回挿入した箇所）の位置を検出できず、無関係な場所を候補として返していた
+- **修正**: 各フレームの特徴ベクトルに、**直前フレームからの変化量（デルタ）を連結**するよう`FeatureExtractor.Extract`を変更（[FeatureExtractor.cs](src/RadioCmCutter.Core/Detection/FeatureExtractor.cs)）。静止的な音は「変化がない」という点でも自分自身と紛らわしくなりうるが、実際の番組（トーク・ノイズ等）はデルタ込みで見ると区別しやすくなり、検証で改善を確認済み
+- **検証方法**: `tools/ffmpeg`同梱後、ffmpegで合成音声（ノイズ番組＋同一1000Hzトーンを2回挿入）を生成し、使い捨てのコンソールプロジェクト経由でCoreパイプラインを直接実行して確認（本体リポジトリには含めていない、一時的な検証手順）
+- **検証結果**: 真のCM位置[30.0-45.0s][85.0-100.0s]に対し、検出結果[30.46-41.76s][1:25.02-1:37.02]と近い一致（境界の数秒のズレは音量境界補正が無音のないテスト音声では効きにくいため。実際の録音では前後に無音/フェードがあることが多く、より正確に働く見込み）
 
 ### 既知の課題・今後の改善余地
 - `RepeatSegmentDetector`は素朴な総当たり（O(フレーム数^2)）実装。長時間音声・多数ファイル一括処理では時間がかかる可能性があり、将来的に高速化（ブロック化、間引き、ハッシュベースの事前絞り込み等）の余地がある
-- 類似度閾値・最小run長・最小間隔などのパラメータ（`RepeatDetectionOptions`）は初期値の当て推量。実データでのチューニングが必要
-- FFmpeg未同梱のため、`FfmpegLocator.TryVerify()`は現時点では失敗し、起動時に警告が出る（クラッシュはしない）
+- 類似度閾値・最小run長・最小間隔などのパラメータ（`RepeatDetectionOptions`）は初期値の当て推量。実際のラジオ録音でのチューニングが必要
+- デルタ特徴を追加してもなお、**完全に無音・完全に一定のトーンが長時間続く区間**は、理論上「自分自身との繰り返し」と区別できない（変化が全くない音は、どの瞬間を切り取っても同じに見えるため）。実際のトーク番組ではまず起きないが、長い無音・一定音のテスト信号等では注意
+- FFmpegは`src/RadioCmCutter.App/tools/ffmpeg/`に同梱済み（BtbN/FFmpeg-Buildsより取得。GPLv3、別プロセス起動のみでライブラリはリンクしていない）
 
-## FFmpeg同梱について（要ユーザー判断・未着手）
+## FFmpeg同梱について（対応済み・リポジトリに同梱）
 
-配布時に別PCでの追加インストールを避けるため、`tools/ffmpeg/ffmpeg.exe`・`ffprobe.exe`として同梱する方針（[SPEC.md](SPEC.md)参照）。
-入手方法についてユーザーと相談中：
-- 候補ソース: gyan.dev（ffmpeg.org公式が案内するWindowsビルド配布元の一つ）や BtbN/FFmpeg-Builds（GitHub Releases）
-- ライセンス面: 再配布するなら GPL版よりLGPL版（"shared"ビルド）の方が安全という考慮点がある
-- ダウンロードはClaude Codeの安全ルール上「明示的な許可」が必要な操作のため、実行前に必ずユーザーに確認する
+配布時に別PCでの追加インストールを避けるため、`src/RadioCmCutter.App/tools/ffmpeg/`に配置済み（csprojで出力ディレクトリへ自動コピーされる設定済み、[RadioCmCutter.App.csproj](src/RadioCmCutter.App/RadioCmCutter.App.csproj)参照）。**このフォルダはリポジトリにコミットされている**（`.gitignore`からは除外済み）。
+
+- 入手元: **BtbN/FFmpeg-Builds**（GitHub Releases）。当初gyan.devを使う予定だったが、gyan.devのサーバーが極端に遅かった（実測40KB/秒程度、GitHubは5MB/秒程度）ため切り替えた
+- ビルド種別: `ffmpeg-master-latest-win64-lgpl-shared.zip`（LGPL、shared=DLL分割構成）を使用。当初はGPLの静的ビルド（`ffmpeg-master-latest-win64-gpl.zip`）だったが、**ffmpeg.exe/ffprobe.exeが157MB前後あり、GitHubの1ファイル100MB上限を超えて通常pushできなかった**ため切り替えた。sharedビルドはffmpeg.exe/ffprobe.exeが数百KBと小さく、実体は各DLL（avcodec等、最大でも90MB程度）に分散するため、Git LFSなしでpushできる
+- 同梱ファイル: `ffmpeg.exe`, `ffprobe.exe`, `avcodec-63.dll`, `avdevice-63.dll`, `avfilter-12.dll`, `avformat-63.dll`, `avutil-61.dll`, `swresample-7.dll`, `swscale-10.dll`, `LICENSE.txt`（`ffplay.exe`は本アプリで不要なため同梱していない）
+- ライセンス: LGPL（動画コーデックのGPL部分を除いたビルド）。mp3/aac/m4a/wavの処理には影響なし（libmp3lame含めLGPL範囲で提供されている）。本アプリはffmpeg.exeを別プロセスとして呼び出すだけでライブラリをリンクしていない。同梱した`LICENSE.txt`は削除しないこと
+- DLLのバージョン番号（-63, -12等）はビルドが更新されると変わる可能性があるため、将来ffmpegを更新する際はbinフォルダの全ファイルを一致するセットで入れ替えること（exeと不整合なバージョンのDLLが混在するとロードエラーになる）
+
+## Git / GitHub
+
+- リモート: https://github.com/shuokitsu/RadioCmCutter （個人アカウント。**現在Public**、ユーザー了承済み・当面このまま）
+- ローカルgit設定はこのリポジトリのみの`--local`設定（`user.name=shuokitsu`, `user.email=shuokitsu@noreply.local`。実在メールではない仮設定）
+- 認証はPAT（`shuokitsu`アカウントのPersonal Access Token, classic, repoスコープ）を使用。ブラウザOAuth（Git Credential Manager）は法人アカウントとの混在で使えなかったため回避した
+- push時は `git -c credential.helper= push` のように資格情報ヘルパーを一時的に無効化し、ユーザー自身のターミナルでユーザー名/PATを直接入力する運用（トークンをClaude Codeに渡さないため）
+- 初回コミット済み（雛形一式）。`tools/ffmpeg/`は`.gitignore`で除外（サイズが大きいバイナリのため）
 
 ## 次のアクション
 
-- FFmpegバイナリの入手方法をユーザーと確定する（Claude Codeが指定ソースからダウンロードするか、ユーザーが自分で入手してtools/ffmpegに配置するか）
-- 実際にサンプル音声ファイルを使ってCore側のロジック（デコード→検出→カット）をエンドツーエンドで動作確認する
-- ユーザー自身によるWPF画面の実機動作確認（ファイル選択・波形表示・検出結果確認・カット実行）
-- 検出パラメータのチューニング（実際のラジオ録音での精度検証）
+- 実際のラジオ録音（人の声＋本物のCM）を使った検出精度の検証・パラメータチューニング（`RepeatDetectionOptions`の閾値等）
+- ユーザー自身によるWPF画面の実機動作確認の継続（検出実行・カット実行を含む一連の操作）
+- パフォーマンス確認（長時間音声・複数ファイル一括処理でのO(フレーム数^2)検出の実行時間）

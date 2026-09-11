@@ -6,6 +6,11 @@ namespace RadioCmCutter.Core.Detection;
 /// <summary>
 /// デコード済みPCMを一定長のフレームに分割し、対数帯域エネルギーの特徴ベクトルを抽出する。
 /// 帯域はメル尺度そのものではなく、対数周波数間隔の簡易バンド分割（実装・計算コストを抑えるため）。
+///
+/// 各フレームの特徴ベクトルは「その瞬間のスペクトル形状」と「直前フレームからの変化量（デルタ）」を
+/// 連結したもの。瞬間のスペクトルだけだと、一定トーンやBGMのような時間的に変化しない音が
+/// 自分自身と誤って「繰り返し」判定されやすい（実データ検証で確認済み）。デルタを含めることで、
+/// 実際に同じ時間変化パターンを持つ区間（＝本当の繰り返しCM）だけを一致とみなしやすくする。
 /// </summary>
 public static class FeatureExtractor
 {
@@ -18,10 +23,14 @@ public static class FeatureExtractor
         var sampleRate = audio.SampleRate;
         var frameSize = NextPowerOfTwo((int)(FrameSeconds * sampleRate));
         var samples = audio.Samples;
-        var frames = new List<FrameFeatures>();
 
         var bandEdges = BuildLogBandEdges(sampleRate, frameSize);
         var window = BuildHammingWindow(frameSize);
+
+        var rawBandEnergies = new List<float[]>();
+        var rmsValues = new List<double>();
+        var starts = new List<TimeSpan>();
+        var ends = new List<TimeSpan>();
 
         for (var offset = 0; offset + frameSize <= samples.Length; offset += frameSize)
         {
@@ -48,12 +57,34 @@ public static class FeatureExtractor
                 bandEnergies[b] = (float)Math.Log10(1.0 + energy);
             }
 
-            Normalize(bandEnergies);
+            rawBandEnergies.Add(bandEnergies);
+            rmsValues.Add(Math.Sqrt(sumSquares / frameSize));
+            starts.Add(TimeSpan.FromSeconds(offset / (double)sampleRate));
+            ends.Add(TimeSpan.FromSeconds((offset + frameSize) / (double)sampleRate));
+        }
 
-            var rms = Math.Sqrt(sumSquares / frameSize);
-            var start = TimeSpan.FromSeconds(offset / (double)sampleRate);
-            var end = TimeSpan.FromSeconds((offset + frameSize) / (double)sampleRate);
-            frames.Add(new FrameFeatures { Start = start, End = end, Vector = bandEnergies, Rms = rms });
+        var frames = new List<FrameFeatures>(rawBandEnergies.Count);
+        for (var i = 0; i < rawBandEnergies.Count; i++)
+        {
+            var spectral = (float[])rawBandEnergies[i].Clone();
+            Normalize(spectral);
+
+            var delta = new float[BandCount];
+            if (i > 0)
+            {
+                for (var b = 0; b < BandCount; b++)
+                {
+                    delta[b] = rawBandEnergies[i][b] - rawBandEnergies[i - 1][b];
+                }
+            }
+            Normalize(delta);
+
+            var combined = new float[BandCount * 2];
+            Array.Copy(spectral, 0, combined, 0, BandCount);
+            Array.Copy(delta, 0, combined, BandCount, BandCount);
+            Normalize(combined);
+
+            frames.Add(new FrameFeatures { Start = starts[i], End = ends[i], Vector = combined, Rms = rmsValues[i] });
         }
 
         return frames;
