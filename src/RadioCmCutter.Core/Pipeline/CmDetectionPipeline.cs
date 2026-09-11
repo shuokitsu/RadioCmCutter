@@ -5,25 +5,30 @@ using RadioCmCutter.Core.Models;
 namespace RadioCmCutter.Core.Pipeline;
 
 /// <summary>
-/// 「デコード→特徴抽出→繰り返し検出→音量境界の精緻化」までを一括で行う。
+/// 「デコード→特徴抽出→繰り返し検出＋急変点検出→統合→音量境界の精緻化」までを一括で行う。
 /// 単一ファイルモードと、複数ファイルをまとめて処理するディレクトリモード（ファイル間の繰り返しも検出）に対応。
 /// </summary>
-public sealed class CmDetectionPipeline(RepeatDetectionOptions? options = null)
+public sealed class CmDetectionPipeline(
+    RepeatDetectionOptions? repeatOptions = null,
+    TransitionDetectionOptions? transitionOptions = null)
 {
-    private readonly RepeatDetectionOptions _options = options ?? new RepeatDetectionOptions();
+    private readonly RepeatDetectionOptions _repeatOptions = repeatOptions ?? new RepeatDetectionOptions();
+    private readonly TransitionDetectionOptions _transitionOptions = transitionOptions ?? new TransitionDetectionOptions();
 
     public async Task<DetectionResult> DetectSingleAsync(string filePath, CancellationToken cancellationToken = default)
     {
         var audio = await AudioDecoder.DecodeForAnalysisAsync(filePath, cancellationToken);
 
-        // 特徴抽出・繰り返し検出はCPU負荷が高い同期処理のため、呼び出し元スレッド（UIスレッド等）を
+        // 特徴抽出・検出はCPU負荷が高い同期処理のため、呼び出し元スレッド（UIスレッド等）を
         // ブロックしないようバックグラウンドスレッドに退避させる。
         var candidates = await Task.Run(() =>
         {
             var frames = FeatureExtractor.Extract(audio);
-            var result = RepeatSegmentDetector.Detect(frames, _options);
-            LoudnessBoundaryRefiner.Refine(result, audio);
-            return result;
+            var repeatCandidates = RepeatSegmentDetector.Detect(frames, _repeatOptions);
+            var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
+            var merged = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates));
+            LoudnessBoundaryRefiner.Refine(merged, audio);
+            return merged;
         }, cancellationToken);
 
         return new DetectionResult
@@ -37,23 +42,28 @@ public sealed class CmDetectionPipeline(RepeatDetectionOptions? options = null)
     /// <summary>
     /// 複数ファイルを一括処理する。ファイル内の繰り返しに加え、ファイル間（別日の同一CM等）の繰り返しも検出対象にする。
     /// </summary>
+    /// <param name="loadProgress">ファイルの読み込み（デコード＋特徴抽出）が1件完了するごとに (完了数, 総数) を通知する。</param>
     public async Task<List<DetectionResult>> DetectBatchAsync(
-        IReadOnlyList<string> filePaths, CancellationToken cancellationToken = default)
+        IReadOnlyList<string> filePaths,
+        IProgress<(int Done, int Total)>? loadProgress = null,
+        CancellationToken cancellationToken = default)
     {
         var decodedAudios = new List<DecodedAudio>(filePaths.Count);
         var framesByFile = new List<List<FrameFeatures>>(filePaths.Count);
 
-        foreach (var path in filePaths)
+        for (var i = 0; i < filePaths.Count; i++)
         {
-            var audio = await AudioDecoder.DecodeForAnalysisAsync(path, cancellationToken);
+            var audio = await AudioDecoder.DecodeForAnalysisAsync(filePaths[i], cancellationToken);
+            var frames = await Task.Run(() => FeatureExtractor.Extract(audio), cancellationToken);
             decodedAudios.Add(audio);
-            framesByFile.Add(FeatureExtractor.Extract(audio));
+            framesByFile.Add(frames);
+            loadProgress?.Report((i + 1, filePaths.Count));
         }
 
         return await Task.Run(() =>
         {
             var combinedFrames = framesByFile.SelectMany(f => f).ToList();
-            var (hitCount, hitScoreSum) = RepeatSegmentDetector.ComputeHits(combinedFrames, _options);
+            var (hitCount, hitScoreSum) = RepeatSegmentDetector.ComputeHits(combinedFrames, _repeatOptions);
 
             var results = new List<DetectionResult>(filePaths.Count);
             var frameOffset = 0;
@@ -64,7 +74,9 @@ public sealed class CmDetectionPipeline(RepeatDetectionOptions? options = null)
                 var hitScoreSumSlice = hitScoreSum.Skip(frameOffset).Take(frames.Count).ToArray();
                 frameOffset += frames.Count;
 
-                var candidates = RepeatSegmentDetector.BuildCandidates(frames, hitCountSlice, hitScoreSumSlice);
+                var repeatCandidates = RepeatSegmentDetector.BuildCandidates(frames, hitCountSlice, hitScoreSumSlice);
+                var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
+                var candidates = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates));
                 LoudnessBoundaryRefiner.Refine(candidates, decodedAudios[fileIndex]);
 
                 results.Add(new DetectionResult
@@ -77,5 +89,35 @@ public sealed class CmDetectionPipeline(RepeatDetectionOptions? options = null)
 
             return results;
         }, cancellationToken);
+    }
+
+    /// <summary>重複・隣接する候補区間を1つにまとめる（確信度は最大値、繰り返し回数は合算）。
+    /// 繰り返し検出と急変点検出の両方が同じCMを検出した場合に、一覧に二重で出さないようにする。</summary>
+    private static List<CmCandidate> MergeOverlappingCandidates(IEnumerable<CmCandidate> candidates)
+    {
+        var sorted = candidates.OrderBy(c => c.Segment.Start).ToList();
+        var merged = new List<CmCandidate>();
+        foreach (var candidate in sorted)
+        {
+            if (merged.Count > 0 && candidate.Segment.Start <= merged[^1].Segment.End)
+            {
+                var last = merged[^1];
+                var newEnd = candidate.Segment.End > last.Segment.End ? candidate.Segment.End : last.Segment.End;
+                last.Segment = new AudioSegment(last.Segment.Start, newEnd);
+                last.Confidence = Math.Max(last.Confidence, candidate.Confidence);
+                last.RepeatCount += candidate.RepeatCount;
+            }
+            else
+            {
+                merged.Add(new CmCandidate
+                {
+                    Segment = candidate.Segment,
+                    Confidence = candidate.Confidence,
+                    RepeatCount = candidate.RepeatCount,
+                });
+            }
+        }
+
+        return merged;
     }
 }

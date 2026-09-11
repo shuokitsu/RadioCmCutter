@@ -36,6 +36,37 @@ public static class AudioDecoder
         return TimeSpan.FromSeconds(seconds);
     }
 
+    /// <summary>元ファイルの音声ビットレート（bps）を取得する。再エンコード時に元のビットレートを
+    /// 引き継ぐために使う（固定値を使うと、元より低ビットレートの場合にファイルサイズが不必要に膨らむ）。
+    /// 取得できない場合はnullを返す。</summary>
+    public static async Task<int?> GetAudioBitrateBpsAsync(string filePath, CancellationToken cancellationToken = default)
+    {
+        var streamArgs = $"-v error -select_streams a:0 -show_entries stream=bit_rate -of csv=p=0 \"{filePath}\"";
+        var (streamExitCode, streamStdOut, _) = await FfmpegProcessRunner.RunCapturingStdOutAsync(
+            FfmpegLocator.FfprobeExePath, streamArgs, cancellationToken);
+        if (streamExitCode == 0 && TryParseBitrate(streamStdOut, out var streamBps))
+        {
+            return streamBps;
+        }
+
+        // ストリームにビットレート情報が無いコンテナ（一部のmp4/m4a等）は、コンテナ全体の値にフォールバック
+        var formatArgs = $"-v error -show_entries format=bit_rate -of csv=p=0 \"{filePath}\"";
+        var (formatExitCode, formatStdOut, _) = await FfmpegProcessRunner.RunCapturingStdOutAsync(
+            FfmpegLocator.FfprobeExePath, formatArgs, cancellationToken);
+        if (formatExitCode == 0 && TryParseBitrate(formatStdOut, out var formatBps))
+        {
+            return formatBps;
+        }
+
+        return null;
+    }
+
+    private static bool TryParseBitrate(byte[] stdOut, out int bps)
+    {
+        var text = System.Text.Encoding.UTF8.GetString(stdOut).Trim();
+        return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out bps) && bps > 0;
+    }
+
     public static async Task<DecodedAudio> DecodeForAnalysisAsync(string filePath, CancellationToken cancellationToken = default)
     {
         // モノラル・16bit signed little-endian PCM・低サンプルレートで標準出力に書き出させる

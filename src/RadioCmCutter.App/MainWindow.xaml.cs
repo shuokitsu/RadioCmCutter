@@ -2,8 +2,10 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using RadioCmCutter.Core.Ffmpeg;
+using RadioCmCutter.Core.Models;
 using RadioCmCutter.Core.Pipeline;
 using Line = System.Windows.Shapes.Line;
 using Rectangle = System.Windows.Shapes.Rectangle;
@@ -15,17 +17,30 @@ namespace RadioCmCutter.App;
 /// </summary>
 public partial class MainWindow : Window
 {
+    private const double PlaybackPreviewSeconds = 3.0;
+
     private static readonly string[] SupportedExtensions = [".mp3", ".aac", ".m4a", ".wav"];
 
     private readonly CmDetectionPipeline _pipeline = new();
+    private readonly MediaPlayer _mediaPlayer = new();
+    private readonly DispatcherTimer _playheadTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly Line _playheadLine = new() { Stroke = Brushes.Yellow, StrokeThickness = 2 };
+
     private List<FileResultItem> _fileResultItems = [];
     private FileResultItem? _selectedItem;
     private DecodedAudio? _selectedAudio;
+
+    private string? _mediaOpenedForPath;
+    private TimeSpan? _pendingSeekOnOpen;
+    private TimeSpan? _playbackStopAt;
 
     public MainWindow()
     {
         InitializeComponent();
         Loaded += MainWindow_Loaded;
+
+        _mediaPlayer.MediaOpened += MediaPlayer_MediaOpened;
+        _playheadTimer.Tick += PlayheadTimer_Tick;
     }
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -87,12 +102,33 @@ public partial class MainWindow : Window
             return;
         }
 
-        SetBusy(true, $"検出中... (0/{files.Count})");
+        StatusText.Text = "";
+        SetBusy(true);
+        FooterStatusText.Text = $"読み込み中... (0/{files.Count})";
+        ShowProgress(indeterminate: false, value: 0, max: files.Count);
+
         try
         {
-            var results = files.Count == 1
-                ? [await _pipeline.DetectSingleAsync(files[0])]
-                : await _pipeline.DetectBatchAsync(files);
+            List<Core.Models.DetectionResult> results;
+            if (files.Count == 1)
+            {
+                ShowProgress(indeterminate: true);
+                FooterStatusText.Text = "検出中...";
+                results = [await _pipeline.DetectSingleAsync(files[0])];
+            }
+            else
+            {
+                var loadProgress = new Progress<(int Done, int Total)>(p =>
+                {
+                    FooterStatusText.Text = $"読み込み中... ({p.Done}/{p.Total})";
+                    ShowProgress(indeterminate: false, value: p.Done, max: p.Total);
+                });
+
+                results = await _pipeline.DetectBatchAsync(files, loadProgress);
+
+                ShowProgress(indeterminate: true);
+                FooterStatusText.Text = "検出処理中...";
+            }
 
             _fileResultItems = results.Select(r => new FileResultItem(r)).ToList();
             FilesListBox.ItemsSource = _fileResultItems;
@@ -101,16 +137,18 @@ public partial class MainWindow : Window
                 FilesListBox.SelectedIndex = 0;
             }
 
-            StatusText.Text = $"検出完了: {files.Count}件のファイルを処理しました。ファイルを選択して結果を確認してください。";
+            FooterStatusText.Text = $"検出完了: {files.Count}件のファイルを処理しました。ファイルを選択して結果を確認してください。";
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "検出中にエラーが発生しました", MessageBoxButton.OK, MessageBoxImage.Error);
             StatusText.Text = "検出に失敗しました。";
+            FooterStatusText.Text = "";
         }
         finally
         {
-            SetBusy(false, StatusText.Text);
+            HideProgress();
+            SetBusy(false);
         }
     }
 
@@ -138,11 +176,14 @@ public partial class MainWindow : Window
             .ToList();
     }
 
-    private async void FilesListBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private async void FilesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        StopPlayback();
+
         _selectedItem = FilesListBox.SelectedItem as FileResultItem;
         _selectedAudio = null;
         WaveformCanvas.Children.Clear();
+        TimeRulerCanvas.Children.Clear();
 
         if (_selectedItem is null)
         {
@@ -156,20 +197,24 @@ public partial class MainWindow : Window
 
         try
         {
-            StatusText.Text = "波形を読み込み中...";
+            StatusText.Text = "";
+            FooterStatusText.Text = "波形を読み込み中...";
             _selectedAudio = await AudioDecoder.DecodeForAnalysisAsync(_selectedItem.FilePath);
             RenderWaveform();
-            StatusText.Text = "";
+            RenderTimeRuler();
+            FooterStatusText.Text = "";
         }
         catch (Exception ex)
         {
             StatusText.Text = $"波形の読み込みに失敗しました: {ex.Message}";
+            FooterStatusText.Text = "";
         }
     }
 
     private void WaveformCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         RenderWaveform();
+        RenderTimeRuler();
     }
 
     private void RenderWaveform()
@@ -227,6 +272,138 @@ public partial class MainWindow : Window
             };
             WaveformCanvas.Children.Add(line);
         }
+
+        WaveformCanvas.Children.Add(_playheadLine);
+        _playheadLine.Y1 = 0;
+        _playheadLine.Y2 = height;
+    }
+
+    private void RenderTimeRuler()
+    {
+        TimeRulerCanvas.Children.Clear();
+        if (_selectedAudio is null) return;
+
+        var width = TimeRulerCanvas.ActualWidth;
+        var height = TimeRulerCanvas.ActualHeight;
+        if (width < 1 || height < 1) return;
+
+        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
+        if (totalSeconds <= 0) return;
+
+        var interval = PickTickIntervalSeconds(totalSeconds);
+        for (var t = 0.0; t <= totalSeconds; t += interval)
+        {
+            var x = t / totalSeconds * width;
+            var tick = new Line { X1 = x, X2 = x, Y1 = 0, Y2 = 6, Stroke = Brushes.Gray, StrokeThickness = 1 };
+            TimeRulerCanvas.Children.Add(tick);
+
+            var label = new TextBlock
+            {
+                Text = TimeSpan.FromSeconds(t).ToString(t >= 3600 ? @"h\:mm\:ss" : @"m\:ss"),
+                Foreground = Brushes.LightGray,
+                FontSize = 10,
+            };
+            Canvas.SetLeft(label, Math.Max(0, x - 15));
+            Canvas.SetTop(label, 8);
+            TimeRulerCanvas.Children.Add(label);
+        }
+    }
+
+    private static double PickTickIntervalSeconds(double totalSeconds)
+    {
+        double[] candidates = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800];
+        var target = totalSeconds / 10.0;
+        foreach (var c in candidates)
+        {
+            if (c >= target) return c;
+        }
+        return candidates[^1];
+    }
+
+    private void PlayStartButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CandidatesDataGrid.SelectedItem is CmCandidate candidate)
+        {
+            PlayAround(candidate.Segment.Start);
+        }
+    }
+
+    private void PlayEndButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CandidatesDataGrid.SelectedItem is CmCandidate candidate)
+        {
+            PlayAround(candidate.Segment.End);
+        }
+    }
+
+    private void StopPlaybackButton_Click(object sender, RoutedEventArgs e)
+    {
+        StopPlayback();
+    }
+
+    private void PlayAround(TimeSpan center)
+    {
+        if (_selectedItem is null || _selectedAudio is null) return;
+
+        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
+        var start = TimeSpan.FromSeconds(Math.Max(0, center.TotalSeconds - PlaybackPreviewSeconds));
+        var stop = TimeSpan.FromSeconds(Math.Min(totalSeconds, center.TotalSeconds + PlaybackPreviewSeconds));
+        _playbackStopAt = stop;
+
+        if (_mediaOpenedForPath == _selectedItem.FilePath)
+        {
+            _mediaPlayer.Position = start;
+            _mediaPlayer.Play();
+            _playheadTimer.Start();
+        }
+        else
+        {
+            _pendingSeekOnOpen = start;
+            _mediaOpenedForPath = _selectedItem.FilePath;
+            _mediaPlayer.Open(new Uri(_selectedItem.FilePath));
+        }
+    }
+
+    private void MediaPlayer_MediaOpened(object? sender, EventArgs e)
+    {
+        if (_pendingSeekOnOpen is not { } seek) return;
+
+        _mediaPlayer.Position = seek;
+        _mediaPlayer.Play();
+        _playheadTimer.Start();
+        _pendingSeekOnOpen = null;
+    }
+
+    private void PlayheadTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_selectedAudio is null) return;
+
+        var position = _mediaPlayer.Position;
+        if (_playbackStopAt is { } stopAt && position >= stopAt)
+        {
+            StopPlayback();
+            return;
+        }
+
+        var width = WaveformCanvas.ActualWidth;
+        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
+        if (width < 1 || totalSeconds <= 0) return;
+
+        if (!WaveformCanvas.Children.Contains(_playheadLine))
+        {
+            WaveformCanvas.Children.Add(_playheadLine);
+        }
+
+        var x = position.TotalSeconds / totalSeconds * width;
+        _playheadLine.X1 = x;
+        _playheadLine.X2 = x;
+    }
+
+    private void StopPlayback()
+    {
+        _playheadTimer.Stop();
+        _mediaPlayer.Pause();
+        _playbackStopAt = null;
     }
 
     private async void ExecuteCutButton_Click(object sender, RoutedEventArgs e)
@@ -254,12 +431,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        SetBusy(true, "カット処理中...");
+        StatusText.Text = "";
+        var total = _fileResultItems.Count;
+        SetBusy(true);
+        FooterStatusText.Text = $"カット中... (0/{total})";
+        ShowProgress(indeterminate: false, value: 0, max: total);
+
         var succeeded = 0;
         var errors = new List<string>();
 
-        foreach (var item in _fileResultItems)
+        for (var i = 0; i < _fileResultItems.Count; i++)
         {
+            var item = _fileResultItems[i];
+            FooterStatusText.Text = $"カット中... ({i + 1}/{total}) {Path.GetFileName(item.FilePath)}";
+            ShowProgress(indeterminate: false, value: i, max: total);
+
             try
             {
                 var keptSegments = AudioCutter.ComputeKeptSegments(
@@ -285,10 +471,13 @@ public partial class MainWindow : Window
             {
                 errors.Add($"{Path.GetFileName(item.FilePath)}: {ex.Message}");
             }
+
+            ShowProgress(indeterminate: false, value: i + 1, max: total);
         }
 
         FooterStatusText.Text = $"カット完了: 成功 {succeeded}件 / 失敗 {errors.Count}件（出力先: {outputFolder}）";
-        SetBusy(false, StatusText.Text);
+        HideProgress();
+        SetBusy(false);
 
         if (errors.Count > 0)
         {
@@ -296,12 +485,28 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SetBusy(bool busy, string statusMessage)
+    private void ShowProgress(bool indeterminate, double value = 0, double max = 1)
+    {
+        FooterProgressBar.Visibility = Visibility.Visible;
+        FooterProgressBar.IsIndeterminate = indeterminate;
+        if (!indeterminate)
+        {
+            FooterProgressBar.Maximum = Math.Max(1, max);
+            FooterProgressBar.Value = value;
+        }
+    }
+
+    private void HideProgress()
+    {
+        FooterProgressBar.Visibility = Visibility.Collapsed;
+        FooterProgressBar.IsIndeterminate = false;
+    }
+
+    private void SetBusy(bool busy)
     {
         DetectButton.IsEnabled = !busy;
         ExecuteCutButton.IsEnabled = !busy;
         BrowseInputButton.IsEnabled = !busy;
         BrowseOutputButton.IsEnabled = !busy;
-        StatusText.Text = statusMessage;
     }
 }

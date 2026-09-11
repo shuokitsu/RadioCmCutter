@@ -75,7 +75,8 @@ public static class AudioCutter
         var concatInputs = string.Concat(labels.Select(l => $"[{l}]"));
         var filterComplex = string.Join(";", filterParts) + $";{concatInputs}concat=n={keptSegments.Count}:v=0:a=1[outa]";
 
-        var extraEncodingArgs = BuildEncodingArgs(outputFilePath);
+        var sourceBitrateBps = await AudioDecoder.GetAudioBitrateBpsAsync(sourceFilePath, cancellationToken);
+        var extraEncodingArgs = BuildEncodingArgs(outputFilePath, sourceBitrateBps);
         var args = $"-y -i \"{sourceFilePath}\" -filter_complex \"{filterComplex}\" -map \"[outa]\" {extraEncodingArgs} \"{outputFilePath}\"";
 
         var result = await FfmpegProcessRunner.RunAsync(FfmpegLocator.FfmpegExePath, args, cancellationToken);
@@ -92,12 +93,13 @@ public static class AudioCutter
     {
         Directory.CreateDirectory(outputDirectory);
         var outputFiles = new List<string>();
+        var sourceBitrateBps = await AudioDecoder.GetAudioBitrateBpsAsync(sourceFilePath, cancellationToken);
 
         for (var i = 0; i < keptSegments.Count; i++)
         {
             var seg = keptSegments[i];
             var outputPath = Path.Combine(outputDirectory, $"{outputBaseName}_part{i + 1:D2}{extensionWithDot}");
-            var extraEncodingArgs = BuildEncodingArgs(outputPath);
+            var extraEncodingArgs = BuildEncodingArgs(outputPath, sourceBitrateBps);
             var args = $"-y -i \"{sourceFilePath}\" -ss {seg.Start.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)} " +
                        $"-to {seg.End.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)} {extraEncodingArgs} \"{outputPath}\"";
 
@@ -113,9 +115,17 @@ public static class AudioCutter
         return outputFiles;
     }
 
-    private static string BuildEncodingArgs(string outputFilePath)
+    /// <summary>元ファイルのビットレートを引き継いで再エンコードする（固定値だと元より低い場合に
+    /// ファイルサイズが不必要に膨らむ・高い場合は逆に劣化するため）。取得できない場合は128kbpsを既定値とする。</summary>
+    private static string BuildEncodingArgs(string outputFilePath, int? sourceBitrateBps)
     {
         var ext = Path.GetExtension(outputFilePath);
-        return LossyExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase) ? "-b:a 192k" : "";
+        if (!LossyExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase))
+        {
+            return "";
+        }
+
+        var kbps = sourceBitrateBps.HasValue ? Math.Max(32, sourceBitrateBps.Value / 1000) : 128;
+        return $"-b:a {kbps}k";
     }
 }

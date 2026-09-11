@@ -77,6 +77,11 @@ public static class FeatureExtractor
                     delta[b] = rawBandEnergies[i][b] - rawBandEnergies[i - 1][b];
                 }
             }
+
+            double deltaNormSquared = 0;
+            foreach (var d in delta) deltaNormSquared += d * d;
+            var spectralChangeMagnitude = Math.Sqrt(deltaNormSquared);
+
             Normalize(delta);
 
             var combined = new float[BandCount * 2];
@@ -84,7 +89,11 @@ public static class FeatureExtractor
             Array.Copy(delta, 0, combined, BandCount, BandCount);
             Normalize(combined);
 
-            frames.Add(new FrameFeatures { Start = starts[i], End = ends[i], Vector = combined, Rms = rmsValues[i] });
+            frames.Add(new FrameFeatures
+            {
+                Start = starts[i], End = ends[i], Vector = combined, Rms = rmsValues[i],
+                SpectralChangeMagnitude = spectralChangeMagnitude,
+            });
         }
 
         return frames;

@@ -79,6 +79,7 @@ public class RepeatSegmentDetectorTests
                 End = start + TimeSpan.FromSeconds(FrameSeconds),
                 Vector = vector,
                 Rms = 0.1,
+                SpectralChangeMagnitude = 0,
             });
         }
         return frames;

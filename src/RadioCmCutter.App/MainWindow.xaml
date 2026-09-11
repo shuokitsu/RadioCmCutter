@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:RadioCmCutter.App"
         mc:Ignorable="d"
-        Title="ラジオCM自動カット" Height="760" Width="1150">
+        Title="ラジオCM自動カット" Height="800" Width="1150">
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -22,11 +22,11 @@
                     <RadioButton x:Name="DirectoryModeRadio" Content="フォルダ指定（連続実行）" GroupName="InputMode" VerticalAlignment="Center"/>
                 </StackPanel>
                 <DockPanel>
-                    <Button x:Name="BrowseInputButton" DockPanel.Dock="Right" Content="参照..." Width="80" Margin="6,0,0,0" Click="BrowseInputButton_Click"/>
                     <Button x:Name="DetectButton" DockPanel.Dock="Right" Content="検出開始" Width="100" Margin="6,0,0,0" Click="DetectButton_Click"/>
+                    <Button x:Name="BrowseInputButton" DockPanel.Dock="Right" Content="参照..." Width="80" Margin="6,0,0,0" Click="BrowseInputButton_Click"/>
                     <TextBox x:Name="InputPathTextBox" VerticalContentAlignment="Center"/>
                 </DockPanel>
-                <TextBlock x:Name="StatusText" Margin="0,6,0,0" Foreground="#555555"/>
+                <TextBlock x:Name="StatusText" Margin="0,6,0,0" Foreground="#C0392B"/>
             </StackPanel>
         </Border>
 
@@ -44,17 +44,32 @@
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="140"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
                 <TextBlock x:Name="SelectedFileHeaderText" Grid.Row="0" FontWeight="Bold" Margin="0,0,0,4"/>
 
-                <Border Grid.Row="1" BorderBrush="#CCCCCC" BorderThickness="1" Margin="0,0,0,8">
-                    <Canvas x:Name="WaveformCanvas" Background="#1E1E1E" SizeChanged="WaveformCanvas_SizeChanged"/>
+                <Border Grid.Row="1" BorderBrush="#CCCCCC" BorderThickness="1" Margin="0,0,0,4">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="110"/>
+                            <RowDefinition Height="22"/>
+                        </Grid.RowDefinitions>
+                        <Canvas x:Name="WaveformCanvas" Grid.Row="0" Background="#1E1E1E" SizeChanged="WaveformCanvas_SizeChanged"/>
+                        <Canvas x:Name="TimeRulerCanvas" Grid.Row="1" Background="#2A2A2A"/>
+                    </Grid>
                 </Border>
 
-                <DataGrid x:Name="CandidatesDataGrid" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False">
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,8">
+                    <TextBlock Text="選択中の区間を再生（前後3秒）:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#555555"/>
+                    <Button x:Name="PlayStartButton" Content="開始位置を再生" Width="110" Margin="0,0,6,0" Click="PlayStartButton_Click"/>
+                    <Button x:Name="PlayEndButton" Content="終了位置を再生" Width="110" Margin="0,0,6,0" Click="PlayEndButton_Click"/>
+                    <Button x:Name="StopPlaybackButton" Content="停止" Width="70" Click="StopPlaybackButton_Click"/>
+                </StackPanel>
+
+                <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False">
                     <DataGrid.Columns>
                         <DataGridCheckBoxColumn Header="カット" Binding="{Binding CutEnabled}" Width="50"/>
                         <DataGridTextColumn Header="開始" Binding="{Binding Segment.Start}" Width="110" IsReadOnly="True"/>
@@ -83,6 +98,9 @@
             </StackPanel>
         </Border>
 
-        <TextBlock x:Name="FooterStatusText" Grid.Row="3" Foreground="#555555"/>
+        <StackPanel Grid.Row="3">
+            <ProgressBar x:Name="FooterProgressBar" Height="14" Margin="0,0,0,4" Visibility="Collapsed"/>
+            <TextBlock x:Name="FooterStatusText" Foreground="#555555"/>
+        </StackPanel>
     </Grid>
 </Window>

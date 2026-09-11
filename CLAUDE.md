@@ -112,11 +112,45 @@
 - **検証方法**: `tools/ffmpeg`同梱後、ffmpegで合成音声（ノイズ番組＋同一1000Hzトーンを2回挿入）を生成し、使い捨てのコンソールプロジェクト経由でCoreパイプラインを直接実行して確認（本体リポジトリには含めていない、一時的な検証手順）
 - **検証結果**: 真のCM位置[30.0-45.0s][85.0-100.0s]に対し、検出結果[30.46-41.76s][1:25.02-1:37.02]と近い一致（境界の数秒のズレは音量境界補正が無音のないテスト音声では効きにくいため。実際の録音では前後に無音/フェードがあることが多く、より正確に働く見込み）
 
+### 検出アルゴリズムの追加強化（2026-09-11 その2）
+
+ユーザーから「検出が甘い（少ない）、音量・音色が変化した箇所（会話↔曲等）を積極的に拾ってほしい」との要望。
+モデルなしでの精度向上として、繰り返し検出に依存しない**急変点ベースの検出**を追加。
+
+- 新規: [TransitionSegmentDetector.cs](src/RadioCmCutter.Core/Detection/TransitionSegmentDetector.cs)。フレームごとの
+  スペクトル変化量（`FrameFeatures.SpectralChangeMagnitude`、新規追加）とRMS（音量）変化を合成したスコアの
+  上位パーセンタイル（既定85%）を「急変点」とし、急変点同士の間（既定4〜90秒）をCM候補として追加する
+- `CmDetectionPipeline`で①繰り返し検出＋③急変点検出の両方を実行し、重複・隣接する候補をマージ（`MergeOverlappingCandidates`、確信度は最大値・繰り返し回数は合算）してから音量境界補正を行う
+- 急変点ベースの候補は`RepeatCount=0`・確信度0.5前後で区別できるようにしている（繰り返し検出由来の候補は確信度が高くなりやすい）
+- 検証: 合成音声（ノイズ番組＋同一CMトーン2回）で、繰り返し検出による2件の高確信度候補に加え、急変点由来の追加候補が複数出ることを確認（[検証ログ参照]。ノイズ内部の統計的揺らぎにも反応するため、実際のトーク録音での閾値調整が今後必要）
+
+### カット時のビットレート引き継ぎ修正（2026-09-11）
+
+- **問題**: `AudioCutter`のエンコード設定が常に固定`-b:a 192k`だったため、元ファイルがそれより低いビットレート
+  （ラジオ録音のAAC/MP3は48〜96kbps程度が多い）の場合、カット後のファイルサイズが**3〜4倍に膨張**する不具合があった
+  （ユーザー報告: 42MBのaac元ファイルに対し、カット中のファイルが170MB超になった）
+- **修正**: [AudioDecoder.GetAudioBitrateBpsAsync](src/RadioCmCutter.Core/Ffmpeg/AudioDecoder.cs)でffprobeから元ファイルの
+  ビットレートを取得し、[AudioCutter.BuildEncodingArgs](src/RadioCmCutter.Core/Ffmpeg/AudioCutter.cs)でそれを
+  引き継ぐように変更（取得できない場合のみ128kbpsを既定値とする）
+- 検証: 48kbps AAC(m4a)ファイルをカット（無編集の全区間コピー相当）した結果、出力も46.6kbps相当となり元とほぼ同サイズであることを確認
+
+### WPF画面の操作性改善（2026-09-11）
+
+ユーザーからのフィードバックに基づき対応:
+- 入力欄の「参照...」「検出開始」ボタンの並び順を、操作の流れに合わせて `[パス入力]→[参照...]→[検出開始]` に変更（[MainWindow.xaml](src/RadioCmCutter.App/MainWindow.xaml)のDockPanelの子要素順序を変更。DockPanelは先に書いた要素ほど外側に配置されるため、順序の意味が直感と逆になりやすい点に注意）
+- 波形表示の下に時間目盛り（Canvas「TimeRulerCanvas」、mm:ss表示、ファイル長に応じて目盛り間隔を自動選択）を追加
+- 選択中のCM候補の開始/終了位置（前後3秒）を再生するボタンを追加（`System.Windows.Media.MediaPlayer`使用。Windows標準のMedia Foundationでmp3/aac/m4a/wavを再生でき、追加ライブラリ同梱は不要）。再生中は波形上に黄色い再生位置ライン（`_playheadLine`）を100ms間隔のタイマーで更新表示
+- 検出時（ディレクトリ一括処理でのファイル読み込み進捗）とカット時（ファイルごとの進捗）に、それぞれ`ProgressBar`と「(i/n)」テキストを表示するように変更。`CmDetectionPipeline.DetectBatchAsync`に`IProgress<(int,int)>`パラメータを追加し、ファイル読み込みごとに進捗通知するようにした
+- **修正したバグ**: カット完了後、画面下部（`FooterStatusText`）には完了メッセージが出るが、上部（`StatusText`）が「カット処理中...」のまま残る不具合があった（`SetBusy(false, StatusText.Text)`と自分自身の古い値を再代入していたのが原因）
+- ユーザー方針により、その後**ステータス（進捗・完了）メッセージは`FooterStatusText`（画面最下部）に統一**し、`StatusText`（上部、入力欄の下）は**エラー・警告専用**に再整理した。`SetBusy`はボタンの有効/無効切替のみを担当するように変更し、テキスト設定は呼び出し側で明示的に行う方式にした。進捗バーも検出用・カット用の2つ（`DetectProgressBar`/`CutProgressBar`）を統合し、`FooterProgressBar`1つに一本化（最下部、`FooterStatusText`の上）
+- 併せて判明した既存バグ: `CmDetectionPipeline.DetectBatchAsync`内で`FeatureExtractor.Extract`（CPU負荷の高い同期処理）がバックグラウンドスレッドに退避されておらず、ディレクトリ一括処理時にUIスレッドをブロックしていた。`Task.Run`でラップして修正
+
 ### 既知の課題・今後の改善余地
 - `RepeatSegmentDetector`は素朴な総当たり（O(フレーム数^2)）実装。長時間音声・多数ファイル一括処理では時間がかかる可能性があり、将来的に高速化（ブロック化、間引き、ハッシュベースの事前絞り込み等）の余地がある
-- 類似度閾値・最小run長・最小間隔などのパラメータ（`RepeatDetectionOptions`）は初期値の当て推量。実際のラジオ録音でのチューニングが必要
+- 類似度閾値・最小run長・最小間隔などのパラメータ（`RepeatDetectionOptions`）、急変点検出のパーセンタイル・長さ閾値（`TransitionDetectionOptions`）は初期値の当て推量。実際のラジオ録音でのチューニングが必要
 - デルタ特徴を追加してもなお、**完全に無音・完全に一定のトーンが長時間続く区間**は、理論上「自分自身との繰り返し」と区別できない（変化が全くない音は、どの瞬間を切り取っても同じに見えるため）。実際のトーク番組ではまず起きないが、長い無音・一定音のテスト信号等では注意
-- FFmpegは`src/RadioCmCutter.App/tools/ffmpeg/`に同梱済み（BtbN/FFmpeg-Buildsより取得。GPLv3、別プロセス起動のみでライブラリはリンクしていない）
+- 急変点検出はノイズの統計的揺らぎにも反応しやすく、誤検出（過検出）が増える可能性がある。確信度が低め（0.5前後）に出るようにしてはあるが、実データでの閾値調整が必要
+- FFmpegは`src/RadioCmCutter.App/tools/ffmpeg/`に同梱済み（BtbN/FFmpeg-Builds LGPL sharedビルドより取得。別プロセス起動のみでライブラリはリンクしていない）
 
 ## FFmpeg同梱について（対応済み・リポジトリに同梱）
 
@@ -134,7 +168,7 @@
 - ローカルgit設定はこのリポジトリのみの`--local`設定（`user.name=shuokitsu`, `user.email=shuokitsu@noreply.local`。実在メールではない仮設定）
 - 認証はPAT（`shuokitsu`アカウントのPersonal Access Token, classic, repoスコープ）を使用。ブラウザOAuth（Git Credential Manager）は法人アカウントとの混在で使えなかったため回避した
 - push時は `git -c credential.helper= push` のように資格情報ヘルパーを一時的に無効化し、ユーザー自身のターミナルでユーザー名/PATを直接入力する運用（トークンをClaude Codeに渡さないため）
-- 初回コミット済み（雛形一式）。`tools/ffmpeg/`は`.gitignore`で除外（サイズが大きいバイナリのため）
+- コミット済み（雛形一式＋FFmpeg同梱＋検出改善）。`tools/ffmpeg/`は当初`.gitignore`で除外していたが、ユーザー要望により**リポジトリに同梱する方針に変更**（詳細は「FFmpeg同梱について」章）
 
 ## 次のアクション
 
