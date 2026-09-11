@@ -4,17 +4,26 @@ namespace RadioCmCutter.Core.Detection;
 
 public sealed class TransitionDetectionOptions
 {
-    /// <summary>変化スコアがこの上位パーセンタイル以上のフレーム境界を「急変点」とみなす。</summary>
-    public double ChangeScorePercentile { get; init; } = 0.85;
+    /// <summary>変化スコアがこの上位パーセンタイル以上のフレーム境界を「急変点」とみなす。
+    /// 値を大きくするほど「よほど大きな変化」だけを急変点とみなし、候補が減る。</summary>
+    public double ChangeScorePercentile { get; init; } = 0.93;
 
-    /// <summary>急変点同士の間がこの秒数未満なら、短すぎる（相槌等）として候補にしない。</summary>
-    public double MinSegmentSeconds { get; init; } = 4.0;
+    /// <summary>急変点同士の間がこの秒数未満なら、短すぎる（相槌・言葉の切れ目等）として候補にしない。
+    /// 一般的なCM尺（15秒以上）を想定し、繰り返し検出側のMinRunSecondsと揃えている。</summary>
+    public double MinSegmentSeconds { get; init; } = 8.0;
 
-    /// <summary>急変点同士の間がこの秒数を超えたら、CM尺として長すぎるため候補にしない。</summary>
-    public double MaxSegmentSeconds { get; init; } = 90.0;
+    /// <summary>急変点同士の間がこの秒数を超えたら候補にしない（番組内の1曲フルサイズ等、CMとしては長すぎるため）。</summary>
+    public double MaxSegmentSeconds { get; init; } = 300.0;
 
-    /// <summary>ラウドネスの変化をスペクトル変化と合成する際の重み。</summary>
-    public double RmsJumpWeight { get; init; } = 3.0;
+    /// <summary>ラウドネスの変化をスペクトル変化と合成する際の重み。
+    /// 会話は抑揚だけでも音量が大きく揺れるため、音色（スペクトル）変化より重みを下げている。</summary>
+    public double RmsJumpWeight { get; init; } = 1.5;
+
+    /// <summary>CMスポットの基本尺（秒）。日本のラジオCMは主にこの倍数（15/30/45/60秒）で構成される。</summary>
+    public double SpotUnitSeconds { get; init; } = 15.0;
+
+    /// <summary>区間の長さがCMスポット尺（SpotUnitSecondsの倍数）にこの秒数以内で近ければ「CM尺相当」とみなす。</summary>
+    public double SpotLengthToleranceSeconds { get; init; } = 3.0;
 }
 
 /// <summary>
@@ -60,15 +69,31 @@ public static class TransitionSegmentDetector
             }
 
             var strength = (changeScores[startIdx] + changeScores[endIdx]) / (2 * threshold);
+            var baseConfidence = Math.Clamp(0.5 * Math.Min(strength, 2.0), 0, 1);
+            var isCmLength = IsCloseToSpotLength(duration, options.SpotUnitSeconds, options.SpotLengthToleranceSeconds);
+
             candidates.Add(new CmCandidate
             {
                 Segment = new AudioSegment(frames[startIdx].Start, frames[endIdx].Start),
-                Confidence = Math.Clamp(0.5 * Math.Min(strength, 2.0), 0, 1),
+                // CM尺（15秒の倍数）から外れる長尺の区間は、番組内の音楽（本編）である可能性を考慮して確信度を下げ、
+                // デフォルトではカット対象にしない（ユーザーが必要に応じて手動でONにする）。
+                Confidence = isCmLength ? baseConfidence : baseConfidence * 0.6,
                 RepeatCount = 0,
+                Reason = isCmLength ? DetectionReason.AcousticTransitionCmLength : DetectionReason.AcousticTransitionLong,
+                CutEnabled = isCmLength,
             });
         }
 
         return candidates;
+    }
+
+    /// <summary>durationが unitSeconds の倍数（15,30,45,60...）にtoleranceSeconds以内で近いかどうか。</summary>
+    private static bool IsCloseToSpotLength(double durationSeconds, double unitSeconds, double toleranceSeconds)
+    {
+        if (unitSeconds <= 0) return false;
+        var remainder = durationSeconds % unitSeconds;
+        var distanceToNearestMultiple = Math.Min(remainder, unitSeconds - remainder);
+        return distanceToNearestMultiple <= toleranceSeconds;
     }
 
     private static double Percentile(IEnumerable<double> values, double percentile)

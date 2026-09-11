@@ -4,7 +4,9 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using RadioCmCutter.Core.Detection;
 using RadioCmCutter.Core.Ffmpeg;
+using RadioCmCutter.Core.History;
 using RadioCmCutter.Core.Models;
 using RadioCmCutter.Core.Pipeline;
 using Line = System.Windows.Shapes.Line;
@@ -17,11 +19,12 @@ namespace RadioCmCutter.App;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private const double PlaybackPreviewSeconds = 3.0;
+    private const double PlaybackPreviewSeconds = 1.0;
 
     private static readonly string[] SupportedExtensions = [".mp3", ".aac", ".m4a", ".wav"];
 
-    private readonly CmDetectionPipeline _pipeline = new();
+    private readonly CmHistoryStore _historyStore = CmHistoryStore.Load(CmHistoryStore.GetDefaultFilePath());
+    private readonly CmDetectionPipeline _pipeline;
     private readonly MediaPlayer _mediaPlayer = new();
     private readonly DispatcherTimer _playheadTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly Line _playheadLine = new() { Stroke = Brushes.Yellow, StrokeThickness = 2 };
@@ -39,6 +42,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         Loaded += MainWindow_Loaded;
 
+        _pipeline = new CmDetectionPipeline(historyStore: _historyStore);
         _mediaPlayer.MediaOpened += MediaPlayer_MediaOpened;
         _playheadTimer.Tick += PlayheadTimer_Tick;
     }
@@ -192,7 +196,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        CandidatesDataGrid.ItemsSource = _selectedItem.Result.Candidates;
+        CandidatesDataGrid.ItemsSource = _selectedItem.TimelineRows;
         SelectedFileHeaderText.Text = $"{Path.GetFileName(_selectedItem.FilePath)}　（長さ: {_selectedItem.Result.TotalDuration:hh\\:mm\\:ss}）";
 
         try
@@ -229,16 +233,21 @@ public partial class MainWindow : Window
         var totalSeconds = _selectedAudio.Duration.TotalSeconds;
         if (totalSeconds <= 0) return;
 
-        // CM候補区間のハイライト（背景）
-        foreach (var candidate in _selectedItem.Result.Candidates)
+        // 区間のハイライト（背景）: カット対象は赤、検出はされたがカット対象外の候補は黄色で薄く表示
+        foreach (var row in _selectedItem.TimelineRows)
         {
-            var x1 = candidate.Segment.Start.TotalSeconds / totalSeconds * width;
-            var x2 = candidate.Segment.End.TotalSeconds / totalSeconds * width;
+            if (!row.CutEnabled && !row.IsDetectedCandidate) continue;
+
+            var x1 = row.Segment.Start.TotalSeconds / totalSeconds * width;
+            var x2 = row.Segment.End.TotalSeconds / totalSeconds * width;
+            var fill = row.CutEnabled
+                ? new SolidColorBrush(Color.FromArgb(120, 220, 60, 60))
+                : new SolidColorBrush(Color.FromArgb(80, 220, 190, 60));
             var rect = new Rectangle
             {
                 Width = Math.Max(1, x2 - x1),
                 Height = height,
-                Fill = new SolidColorBrush(Color.FromArgb(120, 220, 60, 60)),
+                Fill = fill,
             };
             Canvas.SetLeft(rect, x1);
             Canvas.SetTop(rect, 0);
@@ -322,17 +331,17 @@ public partial class MainWindow : Window
 
     private void PlayStartButton_Click(object sender, RoutedEventArgs e)
     {
-        if (CandidatesDataGrid.SelectedItem is CmCandidate candidate)
+        if (CandidatesDataGrid.SelectedItem is TimelineSegmentRow row)
         {
-            PlayAround(candidate.Segment.Start);
+            PlayAround(row.Segment.Start);
         }
     }
 
     private void PlayEndButton_Click(object sender, RoutedEventArgs e)
     {
-        if (CandidatesDataGrid.SelectedItem is CmCandidate candidate)
+        if (CandidatesDataGrid.SelectedItem is TimelineSegmentRow row)
         {
-            PlayAround(candidate.Segment.End);
+            PlayAround(row.Segment.End);
         }
     }
 
@@ -406,6 +415,44 @@ public partial class MainWindow : Window
         _playbackStopAt = null;
     }
 
+    /// <summary>
+    /// カット実行時点でのユーザーの判断（カット対象ON＝CMとして確定／検出されたのにOFF＝CMではないと確定）を
+    /// 音響指紋として履歴に保存する。次回以降の検出（他番組含む）で参考にする。
+    /// 何も判断していない区間（未検出かつOFFのまま）は保存しない。
+    /// </summary>
+    private async Task SaveHistoryFromUserDecisionsAsync(FileResultItem item)
+    {
+        try
+        {
+            var audio = await AudioDecoder.DecodeForAnalysisAsync(item.FilePath);
+            var frames = FeatureExtractor.Extract(audio);
+
+            foreach (var row in item.TimelineRows)
+            {
+                if (!row.IsDetectedCandidate && !row.CutEnabled) continue;
+
+                var frameVectors = frames
+                    .Where(f => f.Start >= row.Segment.Start && f.Start < row.Segment.End)
+                    .Select(f => f.Vector)
+                    .ToList();
+                if (frameVectors.Count == 0) continue;
+
+                _historyStore.Add(new CmHistoryEntry
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    IsConfirmedCm = row.CutEnabled,
+                    FrameVectors = frameVectors,
+                    SavedAtUtc = DateTime.UtcNow,
+                    SourceFileName = Path.GetFileName(item.FilePath),
+                });
+            }
+        }
+        catch
+        {
+            // 履歴保存の失敗はカット処理自体を妨げない（ベストエフォート）
+        }
+    }
+
     private async void ExecuteCutButton_Click(object sender, RoutedEventArgs e)
     {
         if (_fileResultItems.Count == 0)
@@ -450,7 +497,9 @@ public partial class MainWindow : Window
             {
                 var keptSegments = AudioCutter.ComputeKeptSegments(
                     item.Result.TotalDuration,
-                    item.Result.Candidates.Where(c => c.CutEnabled).Select(c => c.Segment));
+                    item.TimelineRows.Where(r => r.CutEnabled).Select(r => r.Segment));
+
+                await SaveHistoryFromUserDecisionsAsync(item);
 
                 var ext = Path.GetExtension(item.FilePath);
                 var baseName = Path.GetFileNameWithoutExtension(item.FilePath);
@@ -473,6 +522,15 @@ public partial class MainWindow : Window
             }
 
             ShowProgress(indeterminate: false, value: i + 1, max: total);
+        }
+
+        try
+        {
+            _historyStore.Save(CmHistoryStore.GetDefaultFilePath());
+        }
+        catch
+        {
+            // 履歴の保存失敗はカット結果自体には影響させない（ベストエフォート）
         }
 
         FooterStatusText.Text = $"カット完了: 成功 {succeeded}件 / 失敗 {errors.Count}件（出力先: {outputFolder}）";

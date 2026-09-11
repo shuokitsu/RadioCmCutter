@@ -143,6 +143,55 @@
 - 検出時（ディレクトリ一括処理でのファイル読み込み進捗）とカット時（ファイルごとの進捗）に、それぞれ`ProgressBar`と「(i/n)」テキストを表示するように変更。`CmDetectionPipeline.DetectBatchAsync`に`IProgress<(int,int)>`パラメータを追加し、ファイル読み込みごとに進捗通知するようにした
 - **修正したバグ**: カット完了後、画面下部（`FooterStatusText`）には完了メッセージが出るが、上部（`StatusText`）が「カット処理中...」のまま残る不具合があった（`SetBusy(false, StatusText.Text)`と自分自身の古い値を再代入していたのが原因）
 - ユーザー方針により、その後**ステータス（進捗・完了）メッセージは`FooterStatusText`（画面最下部）に統一**し、`StatusText`（上部、入力欄の下）は**エラー・警告専用**に再整理した。`SetBusy`はボタンの有効/無効切替のみを担当するように変更し、テキスト設定は呼び出し側で明示的に行う方式にした。進捗バーも検出用・カット用の2つ（`DetectProgressBar`/`CutProgressBar`）を統合し、`FooterProgressBar`1つに一本化（最下部、`FooterStatusText`の上）
+- 再生の前後秒数は当初3秒だったが、ユーザー要望で1秒に変更（`PlaybackPreviewSeconds`）
+
+### 検出結果一覧を「途切れなく」表示するよう変更（2026-09-11 その3）
+
+ユーザーから「CM候補だけを表示すると、CM候補の間（0:00-10:00, 13:00-18:00のように）が飛んで見え、
+どこが『CMではないと判断された』のか分かりにくい」との指摘。ファイル全体を途切れなく分割し、
+CM候補と非CM区間（検出外）を1つの一覧で表示するように変更。
+
+- 新規: [TimelineSegmentRow.cs](src/RadioCmCutter.App/TimelineSegmentRow.cs)（App層のみ、Core非依存の表示用モデル）。
+  `Build(totalDuration, candidates)`で、検出済みCM候補＋その間の区間（`AudioCutter.ComputeKeptSegments`の
+  複数を流用）を結合し、開始時刻順に並べた「途切れないタイムライン」を作る
+- `FileResultItem`に`TimelineRows`を追加（ファイル選択を切り替えても編集内容が保持されるよう保持）。
+  DataGridの`ItemsSource`、カット実行時の対象判定（`item.TimelineRows.Where(r => r.CutEnabled)`）を
+  `Result.Candidates`から`TimelineRows`に変更
+- 「検出外」の行もチェックボックスで**手動でカット対象に追加できる**（検出漏れの救済）。逆にCM候補も
+  チェックを外せば従来どおりカット対象から外せる
+- 波形上のハイライトも、カット対象（赤・濃い）と検出はされたがカット対象外（黄色・薄い）で色分け
+
+### CM検出理由の分類・音楽の長さ判定（2026-09-11 その4）
+
+ユーザーから「音楽と会話の区別で判断できないか、CMは15/30/60秒等の尺で判断できるはず、番組内の音楽は
+CMよりも長いことが多い」との提案。**音楽/会話の二値分類を検出のゲートにするのは、番組内の選曲（本編）を
+誤ってカットしたり、音楽のない話芸のみのCMを見逃したりするリスクがある**ため採用しなかったが
+（ユーザーとの相談で合意）、**尺（長さ）による分類**は`TransitionSegmentDetector`に統合した。
+
+- `CmCandidate`に`DetectionReason`（`RepeatedContent`/`AcousticTransitionCmLength`/`AcousticTransitionLong`/`HistoryMatch`）を追加。画面には「検出理由」列として表示（[TimelineSegmentRow.cs](src/RadioCmCutter.App/TimelineSegmentRow.cs)の`Kind`）
+- `TransitionSegmentDetector`で、急変点同士の間の長さが**CMスポット尺の基本単位（既定15秒）の倍数に近い**（既定許容±3秒）場合は`AcousticTransitionCmLength`（CM尺相当、デフォルトでカット対象ON）、そうでない長尺（既定300秒まで検出対象を拡大）は`AcousticTransitionLong`（番組内の音楽の可能性、デフォルトでカット対象OFF＝安全側）に分類する（`IsCloseToSpotLength`）
+- `MergeOverlappingCandidates`で、繰り返し検出（`RepeatedContent`）が絡めば常に最優先の理由として扱う（最も信頼できる根拠のため）
+
+### CM検出の過検出抑制（2026-09-11 その4・チューニング）
+
+ユーザーから「会話の途中でも細かく切れすぎる」との指摘。`TransitionDetectionOptions`の既定値を調整:
+- `ChangeScorePercentile`: 0.85 → **0.93**（上位7%のみを急変点とみなす。候補が大幅に減る）
+- `MinSegmentSeconds`: 4.0 → **8.0**（繰り返し検出の`MinRunSeconds`と統一。短い相槌等を除外）
+- `RmsJumpWeight`: 3.0 → **1.5**（会話は抑揚だけで音量が大きく揺れるため、音量変化の影響を下げ、音色（スペクトル）変化を相対的に重視）
+
+### ユーザー確定履歴の学習機能（2026-09-11 その5）
+
+ユーザー提案: 「行クリック→確認→CM判断→実行時に情報を残す」ことで、回を重ねるほど精度が上がる仕組みが欲しい。
+番組ごとに分けず、**内容ベース（音響的な近さ）の判定なので他番組の同じCMにも効くため、グローバルに1つ蓄積**する方針で合意。
+CMは「BGMは同じでトーク部分だけ違う」ことが多いため、**CM全体ではなくフレーム単位（0.5秒）で指紋を保存し、部分一致でも検出できる**設計にした。
+
+- 新規: [History/CmHistoryEntry.cs](src/RadioCmCutter.Core/History/CmHistoryEntry.cs) — 1件の確定区間（CM or 非CM）のフレーム特徴ベクトル列
+- 新規: [History/CmHistoryStore.cs](src/RadioCmCutter.Core/History/CmHistoryStore.cs) — JSON永続化（`System.Text.Json`、追加ライブラリ不要）。保存先は`%LocalAppData%\RadioCmCutter\cm_history.json`（`GetDefaultFilePath()`）。壊れたJSONは無視して空から再開（検出処理は止めない）
+- 新規: [Detection/HistoryMatchDetector.cs](src/RadioCmCutter.Core/Detection/HistoryMatchDetector.cs) — 対象ファイルの各フレームと、履歴の「確定CM」フレーム群とのコサイン類似度（最大値）を計算し、閾値（既定0.93）以上が連続する区間を候補化。「確定非CM」フレームとの類似度も計算し、非CM側の方が近ければ候補にしない（繰り返しがちな誤検出パターンの抑制）。`Reason=HistoryMatch`
+- `CmDetectionPipeline`に`CmHistoryStore?`を追加（省略可・後方互換）。①繰り返し検出②急変点検出③履歴照合の3つを統合
+- App側: `MainWindow`起動時に履歴をロードしパイプラインに渡す。**カット実行時**に、その時点の`TimelineRows`の判断（`CutEnabled=true`→確定CM、検出されたのに`CutEnabled=false`→確定非CM、未判断の検出外区間は保存しない）を履歴に追加・保存（`SaveHistoryFromUserDecisionsAsync`、ベストエフォート・失敗してもカット自体は継続）
+- 検証: 使い捨てコンソールプロジェクトで「1回目検出→確定分を履歴保存→JSON再読込→履歴のみで同一ファイルを再検出」の一連の流れが正しく動作することを確認（保存→リロード→一致検出まで一貫して機能）
+- **既知の制約**: `HistoryMatchDetector`は対象フレーム×履歴フレーム全件の総当たり比較（O(フレーム数×履歴フレーム数)）。履歴が大量に蓄積すると検出が遅くなる可能性があり、将来的に近似近傍探索等の高速化が必要になるかもしれない
 - 併せて判明した既存バグ: `CmDetectionPipeline.DetectBatchAsync`内で`FeatureExtractor.Extract`（CPU負荷の高い同期処理）がバックグラウンドスレッドに退避されておらず、ディレクトリ一括処理時にUIスレッドをブロックしていた。`Task.Run`でラップして修正
 
 ### 既知の課題・今後の改善余地

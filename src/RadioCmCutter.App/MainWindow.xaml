@@ -63,7 +63,7 @@
                 </Border>
 
                 <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,8">
-                    <TextBlock Text="選択中の区間を再生（前後3秒）:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#555555"/>
+                    <TextBlock Text="選択中の区間を再生（前後1秒）:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#555555"/>
                     <Button x:Name="PlayStartButton" Content="開始位置を再生" Width="110" Margin="0,0,6,0" Click="PlayStartButton_Click"/>
                     <Button x:Name="PlayEndButton" Content="終了位置を再生" Width="110" Margin="0,0,6,0" Click="PlayEndButton_Click"/>
                     <Button x:Name="StopPlaybackButton" Content="停止" Width="70" Click="StopPlaybackButton_Click"/>
@@ -75,6 +75,7 @@
                         <DataGridTextColumn Header="開始" Binding="{Binding Segment.Start}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="終了" Binding="{Binding Segment.End}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="長さ(秒)" Binding="{Binding Segment.Duration.TotalSeconds, StringFormat=F1}" Width="90" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="検出理由" Binding="{Binding Kind}" Width="150" IsReadOnly="True"/>
                         <DataGridTextColumn Header="確信度" Binding="{Binding Confidence, StringFormat=P0}" Width="80" IsReadOnly="True"/>
                         <DataGridTextColumn Header="繰り返し回数" Binding="{Binding RepeatCount}" Width="100" IsReadOnly="True"/>
                     </DataGrid.Columns>

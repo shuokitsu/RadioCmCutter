@@ -110,6 +110,7 @@ public static class RepeatSegmentDetector
                 Segment = segment,
                 Confidence = Math.Clamp(avgSimilarity, 0, 1),
                 RepeatCount = totalHits / Math.Max(1, i - start),
+                Reason = DetectionReason.RepeatedContent,
             });
         }
 

@@ -1,19 +1,23 @@
 using RadioCmCutter.Core.Detection;
 using RadioCmCutter.Core.Ffmpeg;
+using RadioCmCutter.Core.History;
 using RadioCmCutter.Core.Models;
 
 namespace RadioCmCutter.Core.Pipeline;
 
 /// <summary>
-/// 「デコード→特徴抽出→繰り返し検出＋急変点検出→統合→音量境界の精緻化」までを一括で行う。
-/// 単一ファイルモードと、複数ファイルをまとめて処理するディレクトリモード（ファイル間の繰り返しも検出）に対応。
+/// 「デコード→特徴抽出→繰り返し検出＋急変点検出＋過去の確定履歴との照合→統合→音量境界の精緻化」までを
+/// 一括で行う。単一ファイルモードと、複数ファイルをまとめて処理するディレクトリモード
+/// （ファイル間の繰り返しも検出）に対応。
 /// </summary>
 public sealed class CmDetectionPipeline(
     RepeatDetectionOptions? repeatOptions = null,
-    TransitionDetectionOptions? transitionOptions = null)
+    TransitionDetectionOptions? transitionOptions = null,
+    CmHistoryStore? historyStore = null)
 {
     private readonly RepeatDetectionOptions _repeatOptions = repeatOptions ?? new RepeatDetectionOptions();
     private readonly TransitionDetectionOptions _transitionOptions = transitionOptions ?? new TransitionDetectionOptions();
+    private readonly CmHistoryStore? _historyStore = historyStore;
 
     public async Task<DetectionResult> DetectSingleAsync(string filePath, CancellationToken cancellationToken = default)
     {
@@ -26,7 +30,8 @@ public sealed class CmDetectionPipeline(
             var frames = FeatureExtractor.Extract(audio);
             var repeatCandidates = RepeatSegmentDetector.Detect(frames, _repeatOptions);
             var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
-            var merged = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates));
+            var historyCandidates = _historyStore is null ? [] : HistoryMatchDetector.Detect(frames, _historyStore);
+            var merged = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates));
             LoudnessBoundaryRefiner.Refine(merged, audio);
             return merged;
         }, cancellationToken);
@@ -76,7 +81,8 @@ public sealed class CmDetectionPipeline(
 
                 var repeatCandidates = RepeatSegmentDetector.BuildCandidates(frames, hitCountSlice, hitScoreSumSlice);
                 var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
-                var candidates = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates));
+                var historyCandidates = _historyStore is null ? [] : HistoryMatchDetector.Detect(frames, _historyStore);
+                var candidates = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates));
                 LoudnessBoundaryRefiner.Refine(candidates, decodedAudios[fileIndex]);
 
                 results.Add(new DetectionResult
@@ -103,9 +109,14 @@ public sealed class CmDetectionPipeline(
             {
                 var last = merged[^1];
                 var newEnd = candidate.Segment.End > last.Segment.End ? candidate.Segment.End : last.Segment.End;
+                // どちらかが繰り返し検出由来なら、最も信頼できる根拠として優先する
+                var isRepeated = last.Reason == DetectionReason.RepeatedContent || candidate.Reason == DetectionReason.RepeatedContent;
+
                 last.Segment = new AudioSegment(last.Segment.Start, newEnd);
                 last.Confidence = Math.Max(last.Confidence, candidate.Confidence);
                 last.RepeatCount += candidate.RepeatCount;
+                last.Reason = isRepeated ? DetectionReason.RepeatedContent : last.Reason;
+                last.CutEnabled = last.CutEnabled || candidate.CutEnabled || isRepeated;
             }
             else
             {
@@ -114,6 +125,8 @@ public sealed class CmDetectionPipeline(
                     Segment = candidate.Segment,
                     Confidence = candidate.Confidence,
                     RepeatCount = candidate.RepeatCount,
+                    Reason = candidate.Reason,
+                    CutEnabled = candidate.CutEnabled,
                 });
             }
         }
