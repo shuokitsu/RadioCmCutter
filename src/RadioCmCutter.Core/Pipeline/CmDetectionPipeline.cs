@@ -6,21 +6,24 @@ using RadioCmCutter.Core.Models;
 namespace RadioCmCutter.Core.Pipeline;
 
 /// <summary>
-/// 「デコード→特徴抽出→繰り返し検出＋急変点検出＋過去の確定履歴との照合→統合→音量境界の精緻化」までを
-/// 一括で行う。単一ファイルモードと、複数ファイルをまとめて処理するディレクトリモード
+/// 「デコード→特徴抽出→①カット位置候補の検出・精緻化→②区間ごとのCM判定」までを一括で行う。
+/// 「どこで切るか」（<see cref="BoundaryDetector"/>）と「それがCMか」（<see cref="SegmentClassifier"/>）を
+/// 分離しているため、すべての候補区間の境界が共通のカット位置候補に揃う。
+/// 単一ファイルモードと、複数ファイルをまとめて処理するディレクトリモード
 /// （ファイル間の繰り返しも検出）に対応。
 /// </summary>
 public sealed class CmDetectionPipeline(
     RepeatDetectionOptions? repeatOptions = null,
-    TransitionDetectionOptions? transitionOptions = null,
+    BoundaryDetectionOptions? boundaryOptions = null,
+    SegmentClassificationOptions? classificationOptions = null,
     CmHistoryStore? historyStore = null)
 {
     private readonly RepeatDetectionOptions _repeatOptions = repeatOptions ?? new RepeatDetectionOptions();
-    private readonly TransitionDetectionOptions _transitionOptions = transitionOptions ?? new TransitionDetectionOptions();
+    private readonly BoundaryDetectionOptions _boundaryOptions = boundaryOptions ?? new BoundaryDetectionOptions();
+    private readonly SegmentClassificationOptions _classificationOptions =
+        classificationOptions ?? new SegmentClassificationOptions();
+    private readonly HistoryMatchOptions _historyOptions = new();
     private readonly CmHistoryStore? _historyStore = historyStore;
-
-    /// <summary>境界補正等で結果的にこの秒数以下になった候補はCMとして意味がないため除外する。</summary>
-    private const double MinFinalCandidateSeconds = 5.0;
 
     public async Task<DetectionResult> DetectSingleAsync(string filePath, CancellationToken cancellationToken = default)
     {
@@ -31,13 +34,8 @@ public sealed class CmDetectionPipeline(
         var candidates = await Task.Run(() =>
         {
             var frames = FeatureExtractor.Extract(audio);
-            var repeatCandidates = RepeatSegmentDetector.Detect(frames, _repeatOptions);
-            var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
-            var historyCandidates = _historyStore is null ? [] : HistoryMatchDetector.Detect(frames, _historyStore);
-            var merged = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates), _transitionOptions);
-            LoudnessBoundaryRefiner.Refine(merged, audio);
-            ReclassifyAcousticCandidatesByFinalLength(merged, _transitionOptions);
-            return FilterOutTooShort(merged);
+            var (hitCount, hitScoreSum) = RepeatSegmentDetector.ComputeHits(frames, _repeatOptions);
+            return ClassifyFile(frames, audio, hitCount, hitScoreSum);
         }, cancellationToken);
 
         return new DetectionResult
@@ -69,123 +67,74 @@ public sealed class CmDetectionPipeline(
             loadProgress?.Report((i + 1, filePaths.Count));
         }
 
-        return await Task.Run(() =>
-        {
-            var combinedFrames = framesByFile.SelectMany(f => f).ToList();
-            var (hitCount, hitScoreSum) = RepeatSegmentDetector.ComputeHits(combinedFrames, _repeatOptions);
-
-            var results = new List<DetectionResult>(filePaths.Count);
-            var frameOffset = 0;
-            for (var fileIndex = 0; fileIndex < filePaths.Count; fileIndex++)
-            {
-                var frames = framesByFile[fileIndex];
-                var hitCountSlice = hitCount.Skip(frameOffset).Take(frames.Count).ToArray();
-                var hitScoreSumSlice = hitScoreSum.Skip(frameOffset).Take(frames.Count).ToArray();
-                frameOffset += frames.Count;
-
-                var repeatCandidates = RepeatSegmentDetector.BuildCandidates(frames, hitCountSlice, hitScoreSumSlice);
-                var transitionCandidates = TransitionSegmentDetector.Detect(frames, _transitionOptions);
-                var historyCandidates = _historyStore is null ? [] : HistoryMatchDetector.Detect(frames, _historyStore);
-                var candidates = MergeOverlappingCandidates(repeatCandidates.Concat(transitionCandidates).Concat(historyCandidates), _transitionOptions);
-                LoudnessBoundaryRefiner.Refine(candidates, decodedAudios[fileIndex]);
-                ReclassifyAcousticCandidatesByFinalLength(candidates, _transitionOptions);
-
-                results.Add(new DetectionResult
+        return await Task.Run(
+            () => ClassifyDecodedBatch(decodedAudios, framesByFile)
+                .Select((candidates, fileIndex) => new DetectionResult
                 {
                     SourceFilePath = filePaths[fileIndex],
                     TotalDuration = decodedAudios[fileIndex].Duration,
-                    Candidates = FilterOutTooShort(candidates),
-                });
-            }
-
-            return results;
-        }, cancellationToken);
+                    Candidates = candidates,
+                })
+                .ToList(),
+            cancellationToken);
     }
 
-    /// <summary>重複・隣接する候補区間を1つにまとめる（確信度は最大値、繰り返し回数は合算）。
-    /// 繰り返し検出と急変点検出の両方が同じCMを検出した場合に、一覧に二重で出さないようにする。</summary>
-    private static List<CmCandidate> MergeOverlappingCandidates(
-        IEnumerable<CmCandidate> candidates, TransitionDetectionOptions transitionOptions)
+    /// <summary>
+    /// デコード済みの音声・フレーム特徴から、ファイルごとのCM候補を判定する
+    /// （通常の入口は <see cref="DetectBatchAsync"/>）。
+    /// 繰り返し検出だけは全ファイルのフレームを連結して一度に計算し、ファイル間の繰り返し
+    /// （別日の同一CM等）も拾う。境界検出・区間分割・CM判定は、区間がファイルを跨がないよう
+    /// ファイルごとに行う。
+    /// </summary>
+    public List<List<CmCandidate>> ClassifyDecodedBatch(
+        IReadOnlyList<DecodedAudio> audios, IReadOnlyList<List<FrameFeatures>> framesByFile)
     {
-        var sorted = candidates.OrderBy(c => c.Segment.Start).ToList();
-        var merged = new List<CmCandidate>();
-        foreach (var candidate in sorted)
+        var combinedFrames = framesByFile.SelectMany(f => f).ToList();
+        var (hitCount, hitScoreSum) = RepeatSegmentDetector.ComputeHits(combinedFrames, _repeatOptions);
+
+        var candidatesByFile = new List<List<CmCandidate>>(framesByFile.Count);
+        var frameOffset = 0;
+        for (var fileIndex = 0; fileIndex < framesByFile.Count; fileIndex++)
         {
-            if (merged.Count > 0 && candidate.Segment.Start <= merged[^1].Segment.End)
-            {
-                var last = merged[^1];
-                var newEnd = candidate.Segment.End > last.Segment.End ? candidate.Segment.End : last.Segment.End;
-                // どちらかが繰り返し検出／過去の確定履歴一致由来なら、最も信頼できる根拠として優先する
-                var isRepeated = last.Reason == DetectionReason.RepeatedContent || candidate.Reason == DetectionReason.RepeatedContent;
-                var isHistoryMatch = !isRepeated
-                    && (last.Reason == DetectionReason.HistoryMatch || candidate.Reason == DetectionReason.HistoryMatch);
+            var frames = framesByFile[fileIndex];
+            var hitCountSlice = hitCount[frameOffset..(frameOffset + frames.Count)];
+            var hitScoreSumSlice = hitScoreSum[frameOffset..(frameOffset + frames.Count)];
+            frameOffset += frames.Count;
 
-                last.Segment = new AudioSegment(last.Segment.Start, newEnd);
-                last.Confidence = Math.Max(last.Confidence, candidate.Confidence);
-                last.RepeatCount += candidate.RepeatCount;
-
-                if (isRepeated)
-                {
-                    last.Reason = DetectionReason.RepeatedContent;
-                    last.CutEnabled = true;
-                }
-                else if (isHistoryMatch)
-                {
-                    last.Reason = DetectionReason.HistoryMatch;
-                    last.CutEnabled = true;
-                }
-                else
-                {
-                    // 音響急変のみに基づく候補は、結合前の断片ではなく結合後の最終的な長さで
-                    // 「CM尺相当／長尺」を再判定する（結合で長くなった区間が古い判定のまま
-                    // カットON扱いになる誤り＝長い本編区間の誤カットを防ぐ）。
-                    var isCmLength = TransitionSegmentDetector.IsCloseToSpotLength(
-                        last.Segment.Duration.TotalSeconds,
-                        transitionOptions.SpotUnitSeconds,
-                        transitionOptions.SpotLengthToleranceSeconds);
-                    last.Reason = isCmLength ? DetectionReason.AcousticTransitionCmLength : DetectionReason.AcousticTransitionLong;
-                    last.CutEnabled = false;
-                }
-            }
-            else
-            {
-                merged.Add(new CmCandidate
-                {
-                    Segment = candidate.Segment,
-                    Confidence = candidate.Confidence,
-                    RepeatCount = candidate.RepeatCount,
-                    Reason = candidate.Reason,
-                    CutEnabled = candidate.CutEnabled,
-                });
-            }
+            candidatesByFile.Add(ClassifyFile(frames, audios[fileIndex], hitCountSlice, hitScoreSumSlice));
         }
 
-        return merged;
+        return candidatesByFile;
     }
 
-    /// <summary>音量境界補正（<see cref="LoudnessBoundaryRefiner"/>）は開始・終了を最大±3秒ずつ動かすため、
-    /// 結合直後は「CM尺相当」だった区間が補正後には数秒伸び、CMスポット尺の許容範囲から外れることがある。
-    /// 音響急変由来（繰り返し検出・履歴一致以外）の候補は、補正後の最終的な長さで再判定する。</summary>
-    private static void ReclassifyAcousticCandidatesByFinalLength(
-        IReadOnlyList<CmCandidate> candidates, TransitionDetectionOptions transitionOptions)
+    /// <summary>1ファイル分の「カット位置候補の検出・精緻化 → 区間ごとのCM判定」を行う。</summary>
+    private List<CmCandidate> ClassifyFile(
+        IReadOnlyList<FrameFeatures> frames, DecodedAudio audio, int[] hitCount, double[] hitScoreSum)
     {
-        foreach (var candidate in candidates)
-        {
-            if (candidate.Reason != DetectionReason.AcousticTransitionCmLength
-                && candidate.Reason != DetectionReason.AcousticTransitionLong)
-            {
-                continue;
-            }
+        var boundaries = BoundaryDetector.DetectBoundaries(frames, _boundaryOptions);
+        var refined = LoudnessBoundaryRefiner.RefineBoundaries(boundaries, audio);
+        // 境界補正は1点ずつ独立にスナップするため、補正後に再び近接し得る
+        refined = BoundaryDetector.CollapseCloseBoundaries(refined, _boundaryOptions.MinBoundaryGapSeconds);
 
-            var isCmLength = TransitionSegmentDetector.IsCloseToSpotLength(
-                candidate.Segment.Duration.TotalSeconds,
-                transitionOptions.SpotUnitSeconds,
-                transitionOptions.SpotLengthToleranceSeconds);
-            candidate.Reason = isCmLength ? DetectionReason.AcousticTransitionCmLength : DetectionReason.AcousticTransitionLong;
-            candidate.CutEnabled = false;
-        }
+        var history = HistoryMatchDetector.ComputeScores(frames, _historyStore);
+        var repeat = new RepeatEvidence(hitCount, hitScoreSum, _repeatOptions.MinRunSeconds);
+
+        return SegmentClassifier.Classify(
+            frames,
+            WithFileEdges(refined, audio.Duration),
+            repeat,
+            history,
+            _historyOptions,
+            _classificationOptions);
     }
 
-    private static List<CmCandidate> FilterOutTooShort(List<CmCandidate> candidates) =>
-        candidates.Where(c => c.Segment.Duration.TotalSeconds > MinFinalCandidateSeconds).ToList();
+    /// <summary>区間がファイル全体を隙間なく覆うよう、先頭と末尾を境界リストに足す。
+    /// この2点は音量境界補正の対象にしない（スナップすると実音声を削る／余らせるため）。</summary>
+    private static List<BoundaryPoint> WithFileEdges(IReadOnlyList<BoundaryPoint> boundaries, TimeSpan totalDuration)
+    {
+        var withEdges = new List<BoundaryPoint>(boundaries.Count + 2) { new(TimeSpan.Zero, 1.0) };
+        withEdges.AddRange(boundaries.Where(b => b.Position > TimeSpan.Zero && b.Position < totalDuration));
+        withEdges.Add(new BoundaryPoint(totalDuration, 1.0));
+        return withEdges;
+    }
 }

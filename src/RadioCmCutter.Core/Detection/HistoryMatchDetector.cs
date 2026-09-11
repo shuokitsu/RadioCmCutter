@@ -1,5 +1,4 @@
 using RadioCmCutter.Core.History;
-using RadioCmCutter.Core.Models;
 
 namespace RadioCmCutter.Core.Detection;
 
@@ -13,66 +12,35 @@ public sealed class HistoryMatchOptions
     public double MinRunSeconds { get; init; } = 3.0;
 }
 
+/// <summary>フレームごとの、過去の確定区間との一致度。確定CM側・確定非CM側の両方を持つ。</summary>
+public readonly record struct HistoryMatchScores(double[] ConfirmedCm, double[] Rejected)
+{
+    public static HistoryMatchScores Empty(int frameCount) => new(new double[frameCount], new double[frameCount]);
+}
+
 /// <summary>
 /// ユーザーが過去に確定した「CMである/CMではない」区間の音響指紋（<see cref="CmHistoryStore"/>）と、
-/// 今回のフレーム列を比較し、過去のCMと似ている区間を候補として検出する。
-/// フレーム単位で比較するため、CMの一部（BGM部分のみ等）が共通していれば部分一致として拾える。
+/// 今回のフレーム列をフレーム単位で比較する。フレーム単位で比較するため、CMの一部
+/// （BGM部分のみ等）が共通していれば部分一致として拾える。
 /// 番組を問わずグローバルに蓄積したデータを使うため、他番組で確定した同じCMにも効く。
+/// 区間の切り出し（どこからどこまでをCM候補とするか）は行わず、
+/// <see cref="SegmentClassifier"/> が共通のカット位置候補に沿って判定する。
 /// </summary>
 public static class HistoryMatchDetector
 {
-    public static List<CmCandidate> Detect(
-        IReadOnlyList<FrameFeatures> frames, CmHistoryStore historyStore, HistoryMatchOptions? options = null)
+    public static HistoryMatchScores ComputeScores(
+        IReadOnlyList<FrameFeatures> frames, CmHistoryStore? historyStore)
     {
-        options ??= new HistoryMatchOptions();
-        if (frames.Count == 0) return [];
+        if (historyStore is null || frames.Count == 0) return HistoryMatchScores.Empty(frames.Count);
 
         var confirmedFrames = historyStore.ConfirmedCmEntries.SelectMany(e => e.FrameVectors).ToList();
-        if (confirmedFrames.Count == 0) return [];
+        if (confirmedFrames.Count == 0) return HistoryMatchScores.Empty(frames.Count);
 
         var rejectedFrames = historyStore.RejectedEntries.SelectMany(e => e.FrameVectors).ToList();
 
-        var confirmedScores = ComputeBestMatchScores(frames, confirmedFrames);
-        var rejectedScores = rejectedFrames.Count > 0
-            ? ComputeBestMatchScores(frames, rejectedFrames)
-            : new double[frames.Count];
-
-        var minRunFrames = Math.Max(1, (int)(options.MinRunSeconds / FeatureExtractor.FrameSeconds));
-        var candidates = new List<CmCandidate>();
-
-        var i = 0;
-        while (i < frames.Count)
-        {
-            var isMatch = confirmedScores[i] >= options.SimilarityThreshold && confirmedScores[i] > rejectedScores[i];
-            if (!isMatch)
-            {
-                i++;
-                continue;
-            }
-
-            var start = i;
-            var scoreSum = 0.0;
-            var count = 0;
-            while (i < frames.Count && confirmedScores[i] >= options.SimilarityThreshold && confirmedScores[i] > rejectedScores[i])
-            {
-                scoreSum += confirmedScores[i];
-                count++;
-                i++;
-            }
-
-            if (count < minRunFrames) continue;
-
-            candidates.Add(new CmCandidate
-            {
-                Segment = new AudioSegment(frames[start].Start, frames[i - 1].End),
-                Confidence = Math.Clamp(scoreSum / count, 0, 1),
-                RepeatCount = 0,
-                Reason = DetectionReason.HistoryMatch,
-                CutEnabled = true,
-            });
-        }
-
-        return candidates;
+        return new HistoryMatchScores(
+            ComputeBestMatchScores(frames, confirmedFrames),
+            rejectedFrames.Count > 0 ? ComputeBestMatchScores(frames, rejectedFrames) : new double[frames.Count]);
     }
 
     private static double[] ComputeBestMatchScores(IReadOnlyList<FrameFeatures> frames, List<float[]> historyFrames)
