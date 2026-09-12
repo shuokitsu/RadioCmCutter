@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -12,6 +12,7 @@ using RadioCmCutter.Core.Models;
 using RadioCmCutter.Core.Pipeline;
 using Line = System.Windows.Shapes.Line;
 using Rectangle = System.Windows.Shapes.Rectangle;
+using ShapePath = System.Windows.Shapes.Path; // System.IO.Path と名前が衝突するため別名にする
 
 namespace RadioCmCutter.App;
 
@@ -37,6 +38,15 @@ public partial class MainWindow : Window
     private string? _mediaOpenedForPath;
     private TimeSpan? _pendingSeekOnOpen;
     private TimeSpan? _playbackStopAt;
+
+    // 波形の表示範囲（拡大・縮小・スクロール）。全体表示のときは 0〜ファイル長。
+    private double _viewStartSeconds;
+    private double _viewDurationSeconds;
+
+    // ドラッグによる時間移動の状態。押した位置からの移動量で「クリック」と「ドラッグ」を区別する。
+    private Point? _dragOrigin;
+    private double _dragOriginViewStartSeconds;
+    private bool _dragMoved;
 
     public MainWindow()
     {
@@ -213,8 +223,8 @@ public partial class MainWindow : Window
             StatusText.Text = "";
             FooterStatusText.Text = "波形を読み込み中...";
             _selectedAudio = await AudioDecoder.DecodeForAnalysisAsync(_selectedItem.FilePath);
-            RenderWaveform();
-            RenderTimeRuler();
+            ResetView();
+            UpdatePlaybackPositionText(TimeSpan.Zero);
             FooterStatusText.Text = "";
         }
         catch (Exception ex)
@@ -237,87 +247,119 @@ public partial class MainWindow : Window
 
         var width = WaveformCanvas.ActualWidth;
         var height = WaveformCanvas.ActualHeight;
-        if (width < 1 || height < 1) return;
-
-        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
-        if (totalSeconds <= 0) return;
+        if (width < 1 || height < 1 || _viewDurationSeconds <= 0) return;
 
         // 区間のハイライト（背景）: カット対象は赤、検出はされたがカット対象外の候補は黄色で薄く表示
         foreach (var row in _selectedItem.TimelineRows)
         {
             if (!row.CutEnabled && !row.IsDetectedCandidate) continue;
 
-            var x1 = row.Segment.Start.TotalSeconds / totalSeconds * width;
-            var x2 = row.Segment.End.TotalSeconds / totalSeconds * width;
             var fill = row.CutEnabled
                 ? new SolidColorBrush(Color.FromArgb(120, 220, 60, 60))
                 : new SolidColorBrush(Color.FromArgb(80, 220, 190, 60));
-            var rect = new Rectangle
-            {
-                Width = Math.Max(1, x2 - x1),
-                Height = height,
-                Fill = fill,
-            };
-            Canvas.SetLeft(rect, x1);
-            Canvas.SetTop(rect, 0);
-            WaveformCanvas.Children.Add(rect);
+            AddHighlightRectangle(row.Segment.Start.TotalSeconds, row.Segment.End.TotalSeconds, width, height, fill, null);
         }
 
-        // 波形（縦バー方式）
-        var samples = _selectedAudio.Samples;
-        var pixelWidth = (int)width;
-        var half = height / 2;
-        for (var x = 0; x < pixelWidth; x++)
+        // 一覧で選択中の区間（全体のどこにあるかを見るためのハイライト）
+        if (CandidatesDataGrid.SelectedItem is TimelineSegmentRow selected)
         {
-            var startSample = (long)((double)x / pixelWidth * samples.Length);
-            var endSample = (long)((double)(x + 1) / pixelWidth * samples.Length);
-            endSample = Math.Min(samples.Length, Math.Max(endSample, startSample + 1));
-
-            float peak = 0;
-            for (var s = startSample; s < endSample; s++)
-            {
-                var v = Math.Abs(samples[s]);
-                if (v > peak) peak = v;
-            }
-
-            var lineHeight = peak * half;
-            var line = new Line
-            {
-                X1 = x, X2 = x,
-                Y1 = half - lineHeight, Y2 = half + lineHeight,
-                Stroke = Brushes.PaleGreen,
-                StrokeThickness = 1,
-            };
-            WaveformCanvas.Children.Add(line);
+            AddHighlightRectangle(
+                selected.Segment.Start.TotalSeconds,
+                selected.Segment.End.TotalSeconds,
+                width,
+                height,
+                new SolidColorBrush(Color.FromArgb(90, 255, 240, 0)),
+                new SolidColorBrush(Color.FromArgb(230, 255, 230, 0)));
         }
+
+        WaveformCanvas.Children.Add(BuildWaveformPath(width, height));
 
         WaveformCanvas.Children.Add(_playheadLine);
         _playheadLine.Y1 = 0;
         _playheadLine.Y2 = height;
+        UpdatePlayheadPosition(_mediaPlayer.Position);
+    }
+
+    /// <summary>表示範囲に収まる部分だけを1つのPathにまとめて描く（拡大・ドラッグ中も軽快に動くよう、
+    /// ピクセル列ごとに個別の図形を作らない）。</summary>
+    private ShapePath BuildWaveformPath(double width, double height)
+    {
+        var samples = _selectedAudio!.Samples;
+        var sampleRate = _selectedAudio.SampleRate;
+        var half = height / 2;
+        var pixelWidth = (int)width;
+        var secondsPerPixel = _viewDurationSeconds / width;
+
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            for (var x = 0; x < pixelWidth; x++)
+            {
+                var fromSeconds = _viewStartSeconds + (x * secondsPerPixel);
+                var startSample = (long)(fromSeconds * sampleRate);
+                var endSample = (long)((fromSeconds + secondsPerPixel) * sampleRate);
+                startSample = Math.Clamp(startSample, 0, samples.Length);
+                endSample = Math.Clamp(Math.Max(endSample, startSample + 1), 0, samples.Length);
+
+                float peak = 0;
+                for (var s = startSample; s < endSample; s++)
+                {
+                    var v = Math.Abs(samples[s]);
+                    if (v > peak) peak = v;
+                }
+
+                var lineHeight = peak * half;
+                context.BeginFigure(new Point(x, half - lineHeight), false, false);
+                context.LineTo(new Point(x, half + lineHeight), true, false);
+            }
+        }
+        geometry.Freeze();
+
+        return new ShapePath { Data = geometry, Stroke = Brushes.PaleGreen, StrokeThickness = 1 };
+    }
+
+    private void AddHighlightRectangle(
+        double startSeconds, double endSeconds, double width, double height, Brush fill, Brush? stroke)
+    {
+        var viewEnd = _viewStartSeconds + _viewDurationSeconds;
+        if (endSeconds < _viewStartSeconds || startSeconds > viewEnd) return;
+
+        var x1 = TimeToX(Math.Max(startSeconds, _viewStartSeconds), width);
+        var x2 = TimeToX(Math.Min(endSeconds, viewEnd), width);
+        var rect = new Rectangle
+        {
+            Width = Math.Max(1, x2 - x1),
+            Height = height,
+            Fill = fill,
+            Stroke = stroke,
+            StrokeThickness = stroke is null ? 0 : 1.5,
+        };
+        Canvas.SetLeft(rect, x1);
+        Canvas.SetTop(rect, 0);
+        WaveformCanvas.Children.Add(rect);
     }
 
     private void RenderTimeRuler()
     {
         TimeRulerCanvas.Children.Clear();
-        if (_selectedAudio is null) return;
+        if (_selectedAudio is null || _viewDurationSeconds <= 0) return;
 
         var width = TimeRulerCanvas.ActualWidth;
-        var height = TimeRulerCanvas.ActualHeight;
-        if (width < 1 || height < 1) return;
+        if (width < 1) return;
 
-        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
-        if (totalSeconds <= 0) return;
+        var interval = PickTickIntervalSeconds(_viewDurationSeconds);
+        var viewEnd = _viewStartSeconds + _viewDurationSeconds;
+        var first = Math.Ceiling(_viewStartSeconds / interval) * interval;
 
-        var interval = PickTickIntervalSeconds(totalSeconds);
-        for (var t = 0.0; t <= totalSeconds; t += interval)
+        for (var t = first; t <= viewEnd; t += interval)
         {
-            var x = t / totalSeconds * width;
+            var x = TimeToX(t, width);
             var tick = new Line { X1 = x, X2 = x, Y1 = 0, Y2 = 6, Stroke = Brushes.Gray, StrokeThickness = 1 };
             TimeRulerCanvas.Children.Add(tick);
 
             var label = new TextBlock
             {
-                Text = TimeSpan.FromSeconds(t).ToString(t >= 3600 ? @"h\:mm\:ss" : @"m\:ss"),
+                Text = FormatRulerLabel(t, interval),
                 Foreground = Brushes.LightGray,
                 FontSize = 10,
             };
@@ -327,9 +369,23 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>目盛りの表記。拡大して目盛り間隔が1秒未満になったときだけ小数を出す。</summary>
+    private static string FormatRulerLabel(double seconds, double interval)
+    {
+        var time = TimeSpan.FromSeconds(seconds);
+        if (interval < 1) return time.ToString(@"m\:ss\.f");
+        return seconds >= 3600 ? time.ToString(@"h\:mm\:ss") : time.ToString(@"m\:ss");
+    }
+
+    private double TimeToX(double seconds, double width) =>
+        (seconds - _viewStartSeconds) / _viewDurationSeconds * width;
+
+    private double XToTime(double x, double width) =>
+        _viewStartSeconds + (x / width * _viewDurationSeconds);
+
     private static double PickTickIntervalSeconds(double totalSeconds)
     {
-        double[] candidates = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800];
+        double[] candidates = [0.1, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800];
         var target = totalSeconds / 10.0;
         foreach (var c in candidates)
         {
@@ -392,20 +448,150 @@ public partial class MainWindow : Window
 
     private static string FormatTime(TimeSpan t) => t.ToString(@"hh\:mm\:ss\.ff");
 
-    /// <summary>波形上でクリックされた位置から再生する（検出結果に関係なく自由に内容を確認するため、
-    /// 区間再生と違って停止するまで流し続ける）。</summary>
+    private const double MinViewSeconds = 2.0;
+    private const double DragThresholdPixels = 4.0;
+
+    private void ResetView()
+    {
+        _viewStartSeconds = 0;
+        _viewDurationSeconds = _selectedAudio?.Duration.TotalSeconds ?? 0;
+        RedrawView();
+    }
+
+    /// <summary>表示範囲をファイル内に収める。</summary>
+    private void ClampView()
+    {
+        if (_selectedAudio is null) return;
+
+        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
+        _viewDurationSeconds = Math.Clamp(_viewDurationSeconds, Math.Min(MinViewSeconds, totalSeconds), totalSeconds);
+        _viewStartSeconds = Math.Clamp(_viewStartSeconds, 0, Math.Max(0, totalSeconds - _viewDurationSeconds));
+    }
+
+    private void RedrawView()
+    {
+        ClampView();
+        RenderWaveform();
+        RenderTimeRuler();
+        UpdateViewRangeText();
+    }
+
+    private void UpdateViewRangeText()
+    {
+        if (_selectedAudio is null || _viewDurationSeconds <= 0)
+        {
+            ViewRangeText.Text = "";
+            return;
+        }
+
+        var isWholeFile = _viewDurationSeconds >= _selectedAudio.Duration.TotalSeconds - 0.001;
+        ViewRangeText.Text = isWholeFile
+            ? "全体表示"
+            : $"表示範囲 {FormatTime(TimeSpan.FromSeconds(_viewStartSeconds))} 〜 "
+                + $"{FormatTime(TimeSpan.FromSeconds(_viewStartSeconds + _viewDurationSeconds))}（ドラッグで移動）";
+    }
+
+    /// <summary>表示範囲を拡大・縮小する。再生位置が見えていればそこを、無ければ表示中央を軸にする
+    /// （映像編集ソフトと同じく、注目している位置が画面から逃げないようにするため）。</summary>
+    private void Zoom(double factor)
+    {
+        if (_selectedAudio is null || _viewDurationSeconds <= 0) return;
+
+        var playhead = _mediaPlayer.Position.TotalSeconds;
+        var anchor = playhead > _viewStartSeconds && playhead < _viewStartSeconds + _viewDurationSeconds
+            ? playhead
+            : _viewStartSeconds + (_viewDurationSeconds / 2);
+
+        var ratio = (anchor - _viewStartSeconds) / _viewDurationSeconds;
+        _viewDurationSeconds *= factor;
+        ClampView();
+        _viewStartSeconds = anchor - (ratio * _viewDurationSeconds);
+
+        RedrawView();
+    }
+
+    private void ZoomInButton_Click(object sender, RoutedEventArgs e) => Zoom(0.5);
+
+    private void ZoomOutButton_Click(object sender, RoutedEventArgs e) => Zoom(2.0);
+
+    private void ZoomResetButton_Click(object sender, RoutedEventArgs e) => ResetView();
+
+    private void WaveformCanvas_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (_selectedAudio is null) return;
+        Zoom(e.Delta > 0 ? 0.8 : 1.25);
+        e.Handled = true;
+    }
+
     private void WaveformCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (_selectedAudio is null) return;
 
+        _dragOrigin = e.GetPosition(WaveformCanvas);
+        _dragOriginViewStartSeconds = _viewStartSeconds;
+        _dragMoved = false;
+        WaveformCanvas.CaptureMouse();
+    }
+
+    /// <summary>拡大中はドラッグで時間方向にスクロールする。</summary>
+    private void WaveformCanvas_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_dragOrigin is not { } origin || _selectedAudio is null) return;
+
         var width = WaveformCanvas.ActualWidth;
         if (width < 1) return;
 
-        var ratio = Math.Clamp(e.GetPosition(WaveformCanvas).X / width, 0, 1);
-        var position = TimeSpan.FromSeconds(ratio * _selectedAudio.Duration.TotalSeconds);
+        var deltaX = e.GetPosition(WaveformCanvas).X - origin.X;
+        if (!_dragMoved && Math.Abs(deltaX) < DragThresholdPixels) return;
+
+        _dragMoved = true;
+        _viewStartSeconds = _dragOriginViewStartSeconds - (deltaX / width * _viewDurationSeconds);
+        RedrawView();
+    }
+
+    /// <summary>ドラッグでなければ（＝その場でのクリックなら）その位置から再生する。
+    /// 検出結果に関係なく自由に内容を確認できるよう、区間再生と違って停止するまで流し続ける。</summary>
+    private void WaveformCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        WaveformCanvas.ReleaseMouseCapture();
+        if (_dragOrigin is null || _selectedAudio is null) return;
+
+        var wasDrag = _dragMoved;
+        _dragOrigin = null;
+        _dragMoved = false;
+        if (wasDrag) return;
+
+        var width = WaveformCanvas.ActualWidth;
+        if (width < 1) return;
+
+        var seconds = Math.Clamp(
+            XToTime(e.GetPosition(WaveformCanvas).X, width), 0, _selectedAudio.Duration.TotalSeconds);
+        var position = TimeSpan.FromSeconds(seconds);
 
         StartPlayback(position, stopAt: null);
+        UpdatePlaybackPositionText(position);
         FooterStatusText.Text = $"{FormatTime(position)} から再生中（停止ボタンで停止）";
+    }
+
+    /// <summary>一覧で選択された区間を波形上で黄色く示す。
+    /// 拡大中で選択区間が画面外にある場合は、その区間が見える位置まで表示範囲を移動する。</summary>
+    private void CandidatesDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_selectedAudio is null) return;
+
+        if (CandidatesDataGrid.SelectedItem is TimelineSegmentRow row)
+        {
+            var viewEnd = _viewStartSeconds + _viewDurationSeconds;
+            var isOutsideView = row.Segment.End.TotalSeconds < _viewStartSeconds
+                || row.Segment.Start.TotalSeconds > viewEnd;
+            if (isOutsideView)
+            {
+                var center = (row.Segment.Start.TotalSeconds + row.Segment.End.TotalSeconds) / 2;
+                _viewStartSeconds = center - (_viewDurationSeconds / 2);
+            }
+        }
+
+        RedrawView();
     }
 
     private void PlayAround(TimeSpan center)
@@ -461,18 +647,42 @@ public partial class MainWindow : Window
             return;
         }
 
+        UpdatePlayheadPosition(position);
+        UpdatePlaybackPositionText(position);
+    }
+
+    private void UpdatePlayheadPosition(TimeSpan position)
+    {
+        if (_selectedAudio is null || _viewDurationSeconds <= 0) return;
+
         var width = WaveformCanvas.ActualWidth;
-        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
-        if (width < 1 || totalSeconds <= 0) return;
+        if (width < 1) return;
 
         if (!WaveformCanvas.Children.Contains(_playheadLine))
         {
             WaveformCanvas.Children.Add(_playheadLine);
         }
 
-        var x = position.TotalSeconds / totalSeconds * width;
+        // 表示範囲の外にいるときは線を隠す（画面端に貼り付いて誤解を招かないように）
+        var seconds = position.TotalSeconds;
+        var isInView = seconds >= _viewStartSeconds && seconds <= _viewStartSeconds + _viewDurationSeconds;
+        _playheadLine.Visibility = isInView ? Visibility.Visible : Visibility.Collapsed;
+        if (!isInView) return;
+
+        var x = TimeToX(seconds, width);
         _playheadLine.X1 = x;
         _playheadLine.X2 = x;
+    }
+
+    private void UpdatePlaybackPositionText(TimeSpan position)
+    {
+        if (_selectedAudio is null)
+        {
+            PlaybackPositionText.Text = "";
+            return;
+        }
+
+        PlaybackPositionText.Text = $"{FormatTime(position)} / {FormatTime(_selectedAudio.Duration)}";
     }
 
     private void StopPlayback()
@@ -480,6 +690,7 @@ public partial class MainWindow : Window
         _playheadTimer.Stop();
         _mediaPlayer.Pause();
         _playbackStopAt = null;
+        UpdatePlaybackPositionText(_mediaPlayer.Position);
     }
 
     /// <summary>

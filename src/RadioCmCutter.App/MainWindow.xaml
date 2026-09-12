@@ -57,22 +57,37 @@
                             <RowDefinition Height="110"/>
                             <RowDefinition Height="22"/>
                         </Grid.RowDefinitions>
-                        <Canvas x:Name="WaveformCanvas" Grid.Row="0" Background="#1E1E1E" Cursor="Hand"
+                        <Canvas x:Name="WaveformCanvas" Grid.Row="0" Background="#1E1E1E" Cursor="Hand" ClipToBounds="True"
                                 SizeChanged="WaveformCanvas_SizeChanged"
-                                MouseLeftButtonDown="WaveformCanvas_MouseLeftButtonDown"/>
+                                MouseLeftButtonDown="WaveformCanvas_MouseLeftButtonDown"
+                                MouseMove="WaveformCanvas_MouseMove"
+                                MouseLeftButtonUp="WaveformCanvas_MouseLeftButtonUp"
+                                MouseWheel="WaveformCanvas_MouseWheel"/>
                         <Canvas x:Name="TimeRulerCanvas" Grid.Row="1" Background="#2A2A2A"/>
                     </Grid>
                 </Border>
 
-                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,8">
-                    <TextBlock Text="波形をクリックでその位置から再生／選択中の区間を再生（前後1秒）:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#555555"/>
-                    <Button x:Name="PlayStartButton" Content="開始位置を再生" Width="110" Margin="0,0,6,0" Click="PlayStartButton_Click"/>
-                    <Button x:Name="PlayEndButton" Content="終了位置を再生" Width="110" Margin="0,0,6,0" Click="PlayEndButton_Click"/>
-                    <Button x:Name="StopPlaybackButton" Content="停止" Width="70" Margin="0,0,16,0" Click="StopPlaybackButton_Click"/>
-                    <Button x:Name="CopyRowsButton" Content="選択行をコピー（デバッグ報告用）" Width="200" Click="CopyRowsButton_Click"/>
+                <StackPanel Grid.Row="2" Margin="0,0,0,8">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBlock Text="再生:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#555555"/>
+                        <Button x:Name="PlayStartButton" Content="開始位置" Width="72" Margin="0,0,4,0" Click="PlayStartButton_Click"/>
+                        <Button x:Name="PlayEndButton" Content="終了位置" Width="72" Margin="0,0,4,0" Click="PlayEndButton_Click"/>
+                        <Button x:Name="StopPlaybackButton" Content="停止" Width="52" Margin="0,0,12,0" Click="StopPlaybackButton_Click"/>
+                        <TextBlock x:Name="PlaybackPositionText" VerticalAlignment="Center" FontFamily="Consolas" FontSize="13"
+                                   Foreground="#1E7B1E" MinWidth="230"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="表示:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#555555"/>
+                        <Button x:Name="ZoomInButton" Content="拡大 +" Width="60" Margin="0,0,4,0" Click="ZoomInButton_Click"/>
+                        <Button x:Name="ZoomOutButton" Content="縮小 −" Width="60" Margin="0,0,4,0" Click="ZoomOutButton_Click"/>
+                        <Button x:Name="ZoomResetButton" Content="全体表示" Width="72" Margin="0,0,12,0" Click="ZoomResetButton_Click"/>
+                        <TextBlock x:Name="ViewRangeText" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="#555555" MinWidth="210"/>
+                        <Button x:Name="CopyRowsButton" Content="選択行をコピー（デバッグ報告用）" Width="200" Click="CopyRowsButton_Click"/>
+                    </StackPanel>
                 </StackPanel>
 
-                <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" SelectionMode="Extended" SelectionUnit="FullRow">
+                <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" SelectionMode="Extended" SelectionUnit="FullRow"
+                          SelectionChanged="CandidatesDataGrid_SelectionChanged">
                     <DataGrid.InputBindings>
                         <KeyBinding Key="C" Modifiers="Ctrl" Command="ApplicationCommands.Copy"/>
                     </DataGrid.InputBindings>
