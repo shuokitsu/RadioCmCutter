@@ -70,8 +70,9 @@
                 <StackPanel Grid.Row="2" Margin="0,0,0,8">
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                         <TextBlock Text="再生:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#555555"/>
-                        <Button x:Name="PlayStartButton" Content="開始位置" Width="72" Margin="0,0,4,0" Click="PlayStartButton_Click"/>
-                        <Button x:Name="PlayEndButton" Content="終了位置" Width="72" Margin="0,0,4,0" Click="PlayEndButton_Click"/>
+                        <Button x:Name="PlayButton" Content="▶ 再生" Width="66" Margin="0,0,4,0" Click="PlayButton_Click"/>
+                        <Button x:Name="PlayStartButton" Content="区間の開始" Width="80" Margin="0,0,4,0" Click="PlayStartButton_Click"/>
+                        <Button x:Name="PlayEndButton" Content="区間の終了" Width="80" Margin="0,0,4,0" Click="PlayEndButton_Click"/>
                         <Button x:Name="StopPlaybackButton" Content="停止" Width="52" Margin="0,0,12,0" Click="StopPlaybackButton_Click"/>
                         <TextBlock x:Name="PlaybackPositionText" VerticalAlignment="Center" FontFamily="Consolas" FontSize="13"
                                    Foreground="#1E7B1E" MinWidth="230"/>
