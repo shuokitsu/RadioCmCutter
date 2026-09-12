@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using RadioCmCutter.Core.Detection;
+using RadioCmCutter.Core.Evaluation;
 using RadioCmCutter.Core.Ffmpeg;
 using RadioCmCutter.Core.History;
 using RadioCmCutter.Core.Models;
@@ -784,6 +785,107 @@ public partial class MainWindow : Window
         _playingRow.IsPlaying = false;
         _playingRow = null;
     }
+
+    /// <summary>画面で確認・修正した区切りを「正解」として保存する。
+    /// 検出精度を測るためだけに使い、検出処理には渡さない。</summary>
+    private void SaveGroundTruthButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedItem is null) return;
+
+        var groundTruth = new BoundaryGroundTruth
+        {
+            SourceFileName = Path.GetFileName(_selectedItem.FilePath),
+            TotalDurationSeconds = _selectedItem.Result.TotalDuration.TotalSeconds,
+            BoundarySeconds = GetTimelineBoundaries(),
+            AnnotatedRangeStartSeconds = 0,
+            AnnotatedRangeEndSeconds = _selectedItem.Result.TotalDuration.TotalSeconds,
+            SavedAtUtc = DateTime.UtcNow,
+        };
+
+        var path = BoundaryGroundTruth.GetDefaultFilePath(_selectedItem.FilePath);
+        try
+        {
+            groundTruth.Save(path);
+            StatusText.Text = "";
+            FooterStatusText.Text = $"区切り{groundTruth.BoundarySeconds.Count}件を正解として保存しました: {path}";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"正解の保存に失敗しました: {ex.Message}";
+        }
+    }
+
+    /// <summary>保存済みの正解と、検出結果（手動修正前）を突き合わせて精度を出す。</summary>
+    private void EvaluateButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedItem is null) return;
+
+        var path = BoundaryGroundTruth.GetDefaultFilePath(_selectedItem.FilePath);
+        var groundTruth = BoundaryGroundTruth.Load(path);
+        if (groundTruth is null)
+        {
+            StatusText.Text = "正解データがありません。区切りを確認・修正してから「正解として保存」してください。";
+            return;
+        }
+
+        var totalSeconds = _selectedItem.Result.TotalDuration.TotalSeconds;
+        var rows = BoundaryBenchmark.Run(
+            groundTruth.BoundarySeconds,
+            GetDetectedBoundaries(),
+            totalSeconds,
+            tolerances: null,
+            rangeStartSeconds: groundTruth.AnnotatedRangeStartSeconds,
+            rangeEndSeconds: groundTruth.AnnotatedRangeEndSeconds);
+
+        var report = new System.Text.StringBuilder();
+        report.AppendLine($"{Path.GetFileName(_selectedItem.FilePath)}  （長さ {FormatTime(_selectedItem.Result.TotalDuration)}）");
+        report.AppendLine($"正解 {groundTruth.BoundarySeconds.Count}件 / 検出 {GetDetectedBoundaries().Count}件");
+        if (groundTruth.AnnotatedRangeEndSeconds is { } rangeEnd)
+        {
+            var rangeStart = groundTruth.AnnotatedRangeStartSeconds ?? 0;
+            report.AppendLine(
+                $"採点対象の範囲: {FormatTime(TimeSpan.FromSeconds(rangeStart))} 〜 {FormatTime(TimeSpan.FromSeconds(rangeEnd))}"
+                + "（確認し終えていない範囲があるときは、正解ファイルのAnnotatedRange…を書き換えてください）");
+        }
+        report.AppendLine();
+        report.AppendLine(BoundaryBenchmark.Format(rows));
+
+        var text = report.ToString();
+        try
+        {
+            Clipboard.SetText(text); // そのまま報告に貼れるようにする
+        }
+        catch (Exception)
+        {
+            // クリップボードが使えなくても測定結果の表示は続ける
+        }
+
+        StatusText.Text = "";
+        FooterStatusText.Text = "測定結果をクリップボードにコピーしました。";
+        MessageBox.Show(this, text, "区切り検出の精度", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    /// <summary>画面上の区間の切れ目（ファイル先頭・末尾を除く）。</summary>
+    private List<double> GetTimelineBoundaries() =>
+        _selectedItem is null
+            ? []
+            : _selectedItem.TimelineRows
+                .Select(r => r.Segment.Start.TotalSeconds)
+                .Where(s => s > 0)
+                .Distinct()
+                .OrderBy(s => s)
+                .ToList();
+
+    /// <summary>検出結果そのものの区切り（手動修正の影響を受けない、採点対象の推定値）。</summary>
+    private List<double> GetDetectedBoundaries() =>
+        _selectedItem is null
+            ? []
+            : _selectedItem.Result.Candidates
+                .SelectMany(c => new[] { c.Segment.Start.TotalSeconds, c.Segment.End.TotalSeconds })
+                .Where(s => s > 0)
+                .Distinct()
+                .OrderBy(s => s)
+                .ToList();
 
     /// <summary>一覧の行をダブルクリックしたら、その区切りの位置を聴いて確認できるようにする。
     /// 「終了」列なら区間の終わり、それ以外の列なら区間の始まりから再生する
