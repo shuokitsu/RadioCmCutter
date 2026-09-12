@@ -593,6 +593,7 @@ public partial class MainWindow : Window
         StartPlayback(position, stopAt: null);
         UpdatePlaybackPositionText(position);
         MarkPlayingRowAt(position);
+        SelectRowAt(position); // 位置を明示的に指定した操作なので、編集対象としても選んでおく
         FooterStatusText.Text = $"{FormatTime(position)} から再生中（停止ボタンで停止）";
     }
 
@@ -782,6 +783,21 @@ public partial class MainWindow : Window
         if (_playingRow is null) return;
         _playingRow.IsPlaying = false;
         _playingRow = null;
+    }
+
+    /// <summary>その時刻を含む区間を一覧で選択する（＝編集対象にする）。
+    /// 波形をクリックしたときのように、ユーザーが明示的に位置を指定した操作からのみ呼ぶこと。
+    /// 再生の進行に合わせて呼ぶと、再生中に別の区間を選んで編集できなくなる。</summary>
+    private void SelectRowAt(TimeSpan position)
+    {
+        if (_selectedItem is null) return;
+
+        var row = _selectedItem.TimelineRows
+            .FirstOrDefault(r => position >= r.Segment.Start && position < r.Segment.End);
+        if (row is null) return;
+
+        CandidatesDataGrid.SelectedItem = row;
+        CandidatesDataGrid.ScrollIntoView(row);
     }
 
     private void UpdatePlayheadPosition(TimeSpan position)
