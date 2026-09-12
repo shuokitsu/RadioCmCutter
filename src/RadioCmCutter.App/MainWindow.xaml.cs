@@ -29,7 +29,7 @@ public partial class MainWindow : Window
     private readonly CmDetectionPipeline _pipeline;
     private readonly MediaPlayer _mediaPlayer = new();
     private readonly DispatcherTimer _playheadTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
-    private readonly Line _playheadLine = new() { Stroke = Brushes.Yellow, StrokeThickness = 2 };
+    private readonly Line _playheadLine = new() { Stroke = Brushes.Red, StrokeThickness = 2 };
 
     private List<FileResultItem> _fileResultItems = [];
     private FileResultItem? _selectedItem;
@@ -568,9 +568,98 @@ public partial class MainWindow : Window
             XToTime(e.GetPosition(WaveformCanvas).X, width), 0, _selectedAudio.Duration.TotalSeconds);
         var position = TimeSpan.FromSeconds(seconds);
 
+        // Shift+クリックは再生ではなく、その位置に区切りを追加する
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            SplitAt(position);
+            return;
+        }
+
         StartPlayback(position, stopAt: null);
         UpdatePlaybackPositionText(position);
         FooterStatusText.Text = $"{FormatTime(position)} から再生中（停止ボタンで停止）";
+    }
+
+    /// <summary>区切りを増やしても意味がないほど短い区間を作らないための下限。</summary>
+    private const double MinSplitSeconds = 0.2;
+
+    private void SplitAtPlayheadButton_Click(object sender, RoutedEventArgs e) =>
+        SplitAt(_mediaPlayer.Position);
+
+    /// <summary>指定時刻を含む区間を2つに分ける（＝その位置に区切りを追加する）。</summary>
+    private void SplitAt(TimeSpan at)
+    {
+        if (_selectedItem is null) return;
+
+        var rows = _selectedItem.TimelineRows;
+        var index = rows.FindIndex(r => at > r.Segment.Start && at < r.Segment.End);
+        if (index < 0)
+        {
+            StatusText.Text = "その位置には区切れる区間がありません。";
+            return;
+        }
+
+        var target = rows[index];
+        if ((at - target.Segment.Start).TotalSeconds < MinSplitSeconds
+            || (target.Segment.End - at).TotalSeconds < MinSplitSeconds)
+        {
+            StatusText.Text = "区間の端に近すぎるため区切れません。";
+            return;
+        }
+
+        var (before, after) = target.SplitAt(at);
+        rows[index] = before;
+        rows.Insert(index + 1, after);
+
+        StatusText.Text = "";
+        RefreshTimelineRows(selectIndex: index + 1);
+        FooterStatusText.Text = $"{FormatTime(at)} に区切りを追加しました。";
+    }
+
+    private void MergeWithPreviousButton_Click(object sender, RoutedEventArgs e) => MergeSelected(withNext: false);
+
+    private void MergeWithNextButton_Click(object sender, RoutedEventArgs e) => MergeSelected(withNext: true);
+
+    /// <summary>選択中の区間を隣の区間と1つにまとめる（＝間の区切りを取り除く）。</summary>
+    private void MergeSelected(bool withNext)
+    {
+        if (_selectedItem is null) return;
+
+        if (CandidatesDataGrid.SelectedItem is not TimelineSegmentRow selected)
+        {
+            StatusText.Text = "結合する区間を一覧から選択してください。";
+            return;
+        }
+
+        var rows = _selectedItem.TimelineRows;
+        var index = rows.IndexOf(selected);
+        var firstIndex = withNext ? index : index - 1;
+        if (firstIndex < 0 || firstIndex + 1 >= rows.Count)
+        {
+            StatusText.Text = withNext ? "次の区間がありません。" : "前の区間がありません。";
+            return;
+        }
+
+        var merged = TimelineSegmentRow.Merge(rows[firstIndex], rows[firstIndex + 1]);
+        rows[firstIndex] = merged;
+        rows.RemoveAt(firstIndex + 1);
+
+        StatusText.Text = "";
+        RefreshTimelineRows(selectIndex: firstIndex);
+        FooterStatusText.Text =
+            $"{FormatTime(merged.Segment.Start)} 〜 {FormatTime(merged.Segment.End)} を1つの区間にまとめました。";
+    }
+
+    private void RefreshTimelineRows(int selectIndex)
+    {
+        CandidatesDataGrid.Items.Refresh();
+        if (_selectedItem is not null && selectIndex >= 0 && selectIndex < _selectedItem.TimelineRows.Count)
+        {
+            CandidatesDataGrid.SelectedItem = _selectedItem.TimelineRows[selectIndex];
+            CandidatesDataGrid.ScrollIntoView(_selectedItem.TimelineRows[selectIndex]);
+        }
+
+        RedrawView();
     }
 
     /// <summary>一覧で選択された区間を波形上で黄色く示す。
@@ -594,15 +683,15 @@ public partial class MainWindow : Window
         RedrawView();
     }
 
+    /// <summary>指定位置の少し手前から再生する。前後の流れを聴いて区切りを判断するため、
+    /// 区間の終わりで自動停止はせずそのまま流し続ける。</summary>
     private void PlayAround(TimeSpan center)
     {
         if (_selectedAudio is null) return;
 
-        var totalSeconds = _selectedAudio.Duration.TotalSeconds;
         var start = TimeSpan.FromSeconds(Math.Max(0, center.TotalSeconds - PlaybackPreviewSeconds));
-        var stop = TimeSpan.FromSeconds(Math.Min(totalSeconds, center.TotalSeconds + PlaybackPreviewSeconds));
-
-        StartPlayback(start, stop);
+        StartPlayback(start, stopAt: null);
+        UpdatePlaybackPositionText(start);
     }
 
     /// <param name="stopAt">この位置で自動停止する。nullなら停止操作があるまで再生を続ける。</param>

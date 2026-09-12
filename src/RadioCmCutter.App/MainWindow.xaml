@@ -84,6 +84,13 @@
                         <TextBlock x:Name="ViewRangeText" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="#555555" MinWidth="210"/>
                         <Button x:Name="CopyRowsButton" Content="選択行をコピー（デバッグ報告用）" Width="200" Click="CopyRowsButton_Click"/>
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <TextBlock Text="区切り:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#555555"/>
+                        <Button x:Name="SplitAtPlayheadButton" Content="再生位置で区切る" Width="120" Margin="0,0,4,0" Click="SplitAtPlayheadButton_Click"/>
+                        <Button x:Name="MergeWithPreviousButton" Content="前と結合" Width="80" Margin="0,0,4,0" Click="MergeWithPreviousButton_Click"/>
+                        <Button x:Name="MergeWithNextButton" Content="次と結合" Width="80" Margin="0,0,12,0" Click="MergeWithNextButton_Click"/>
+                        <TextBlock Text="（波形をShift+クリックでもその位置で区切れます）" VerticalAlignment="Center" Foreground="#555555"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" SelectionMode="Extended" SelectionUnit="FullRow"
