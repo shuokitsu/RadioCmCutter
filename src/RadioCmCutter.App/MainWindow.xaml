@@ -96,6 +96,17 @@
 
                 <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" SelectionMode="Extended" SelectionUnit="FullRow"
                           SelectionChanged="CandidatesDataGrid_SelectionChanged">
+                    <!-- 再生中の区間は行の背景色で示す（選択＝編集対象とは別の表現にする） -->
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsPlaying}" Value="True">
+                                    <Setter Property="Background" Value="#D6F0D6"/>
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
                     <DataGrid.InputBindings>
                         <KeyBinding Key="C" Modifiers="Ctrl" Command="ApplicationCommands.Copy"/>
                     </DataGrid.InputBindings>

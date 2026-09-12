@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using RadioCmCutter.Core.Ffmpeg;
 using RadioCmCutter.Core.Models;
 
@@ -8,8 +9,26 @@ namespace RadioCmCutter.App;
 /// CM候補は検出結果由来でCutEnabledの初期値がON、間の区間は検出されていないためOFFで始まる
 /// （ユーザーがONにすれば、検出漏れの区間を手動でカット対象に追加できる）。
 /// </summary>
-public sealed class TimelineSegmentRow
+public sealed class TimelineSegmentRow : INotifyPropertyChanged
 {
+    private bool _isPlaying;
+
+    /// <summary>いま再生位置がこの区間にあるか。
+    /// 一覧の選択（＝編集の対象）とは別物として扱う。選択を再生に追従させると、
+    /// 再生しながら別の区間を編集することができなくなるため。</summary>
+    public bool IsPlaying
+    {
+        get => _isPlaying;
+        set
+        {
+            if (_isPlaying == value) return;
+            _isPlaying = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsPlaying)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
     /// <summary>検出境界のズレ等で生じるごく短い「検出外」区間は、単独表示せず前後どちらかの
     /// CM候補に吸収させる。この秒数以下の隙間のみが対象（意味のありそうな短い非CM区間まで
     /// 飲み込まないよう小さめに設定）。</summary>

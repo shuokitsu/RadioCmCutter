@@ -48,9 +48,8 @@ public partial class MainWindow : Window
     private double _dragOriginViewStartSeconds;
     private bool _dragMoved;
 
-    /// <summary>再生の進行に合わせて一覧の選択を動かしている最中かどうか。
-    /// このときは波形の表示範囲を動かさない（ユーザーが見ている場所を勝手に飛ばさないため）。</summary>
-    private bool _isFollowingPlayback;
+    /// <summary>いま再生位置が入っている区間（一覧で「再生中」の印を付けている行）。</summary>
+    private TimelineSegmentRow? _playingRow;
 
     public MainWindow()
     {
@@ -206,6 +205,7 @@ public partial class MainWindow : Window
     private async void FilesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         StopPlayback();
+        ClearPlayingRow();
 
         _selectedItem = FilesListBox.SelectedItem as FileResultItem;
         _selectedAudio = null;
@@ -592,7 +592,7 @@ public partial class MainWindow : Window
 
         StartPlayback(position, stopAt: null);
         UpdatePlaybackPositionText(position);
-        SelectRowAt(position);
+        MarkPlayingRowAt(position);
         FooterStatusText.Text = $"{FormatTime(position)} から再生中（停止ボタンで停止）";
     }
 
@@ -684,8 +684,7 @@ public partial class MainWindow : Window
     {
         if (_selectedAudio is null) return;
 
-        // 再生に追従した自動選択のときは表示範囲を動かさない（見ている場所を勝手に飛ばさないため）
-        if (!_isFollowingPlayback && CandidatesDataGrid.SelectedItem is TimelineSegmentRow row)
+        if (CandidatesDataGrid.SelectedItem is TimelineSegmentRow row)
         {
             var viewEnd = _viewStartSeconds + _viewDurationSeconds;
             var isOutsideView = row.Segment.End.TotalSeconds < _viewStartSeconds
@@ -755,35 +754,34 @@ public partial class MainWindow : Window
 
         UpdatePlayheadPosition(position);
         UpdatePlaybackPositionText(position);
-        SelectRowAt(position);
+        MarkPlayingRowAt(position);
     }
 
-    /// <summary>再生位置を含む区間を一覧でも選択状態にする（波形と表を連動させ、
-    /// 今聴いている場所が一覧のどの行なのかを追えるようにする）。</summary>
-    private void SelectRowAt(TimeSpan position)
+    /// <summary>再生位置を含む区間に「再生中」の印を付ける。
+    /// 一覧の選択は編集のための操作なので動かさない（再生しながら別の区間を編集できるようにするため）。</summary>
+    private void MarkPlayingRowAt(TimeSpan position)
     {
         if (_selectedItem is null) return;
 
-        if (CandidatesDataGrid.SelectedItem is TimelineSegmentRow current
-            && position >= current.Segment.Start && position < current.Segment.End)
+        if (_playingRow is not null
+            && position >= _playingRow.Segment.Start && position < _playingRow.Segment.End)
         {
-            return; // 既にその区間が選ばれているので何もしない（再描画を避ける）
+            return; // 区間が変わっていなければ何もしない
         }
 
         var row = _selectedItem.TimelineRows
             .FirstOrDefault(r => position >= r.Segment.Start && position < r.Segment.End);
-        if (row is null) return;
 
-        _isFollowingPlayback = true;
-        try
-        {
-            CandidatesDataGrid.SelectedItem = row;
-            CandidatesDataGrid.ScrollIntoView(row);
-        }
-        finally
-        {
-            _isFollowingPlayback = false;
-        }
+        if (_playingRow is not null) _playingRow.IsPlaying = false;
+        _playingRow = row;
+        if (row is not null) row.IsPlaying = true;
+    }
+
+    private void ClearPlayingRow()
+    {
+        if (_playingRow is null) return;
+        _playingRow.IsPlaying = false;
+        _playingRow = null;
     }
 
     private void UpdatePlayheadPosition(TimeSpan position)
