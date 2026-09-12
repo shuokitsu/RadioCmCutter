@@ -95,7 +95,8 @@
                 </StackPanel>
 
                 <DataGrid x:Name="CandidatesDataGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="False" SelectionMode="Extended" SelectionUnit="FullRow"
-                          SelectionChanged="CandidatesDataGrid_SelectionChanged">
+                          SelectionChanged="CandidatesDataGrid_SelectionChanged"
+                          MouseDoubleClick="CandidatesDataGrid_MouseDoubleClick">
                     <!-- 再生中の区間は行の背景色で示す（選択＝編集対象とは別の表現にする） -->
                     <DataGrid.RowStyle>
                         <Style TargetType="DataGridRow">
@@ -116,7 +117,7 @@
                     <DataGrid.Columns>
                         <DataGridCheckBoxColumn Header="カット" Binding="{Binding CutEnabled}" Width="50"/>
                         <DataGridTextColumn Header="開始" Binding="{Binding Segment.Start}" Width="110" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="終了" Binding="{Binding Segment.End}" Width="110" IsReadOnly="True"/>
+                        <DataGridTextColumn x:Name="EndTimeColumn" Header="終了" Binding="{Binding Segment.End}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="長さ(秒)" Binding="{Binding Segment.Duration.TotalSeconds, StringFormat=F1}" Width="90" IsReadOnly="True"/>
                         <DataGridTextColumn Header="検出理由" Binding="{Binding Kind}" Width="150" IsReadOnly="True"/>
                         <DataGridTextColumn Header="確信度" Binding="{Binding Confidence, StringFormat=P0}" Width="80" IsReadOnly="True"/>

@@ -785,6 +785,36 @@ public partial class MainWindow : Window
         _playingRow = null;
     }
 
+    /// <summary>一覧の行をダブルクリックしたら、その区切りの位置を聴いて確認できるようにする。
+    /// 「終了」列なら区間の終わり、それ以外の列なら区間の始まりから再生する
+    /// （どちらも少し手前から流し、停止するまで続ける）。</summary>
+    private void CandidatesDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (CandidatesDataGrid.SelectedItem is not TimelineSegmentRow row) return;
+
+        var cell = FindAncestor<DataGridCell>(e.OriginalSource as DependencyObject);
+        var isEndColumn = cell?.Column == EndTimeColumn;
+
+        PlayAround(isEndColumn ? row.Segment.End : row.Segment.Start);
+        FooterStatusText.Text = isEndColumn
+            ? $"区間の終了 {FormatTime(row.Segment.End)} を再生中（停止ボタンで停止）"
+            : $"区間の開始 {FormatTime(row.Segment.Start)} を再生中（停止ボタンで停止）";
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T match) return match;
+
+            // クリック元がテキスト要素などVisualでない場合があるため、論理ツリーにも遡れるようにする
+            current = current is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(current)
+                : LogicalTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
     /// <summary>その時刻を含む区間を一覧で選択する（＝編集対象にする）。
     /// 波形をクリックしたときのように、ユーザーが明示的に位置を指定した操作からのみ呼ぶこと。
     /// 再生の進行に合わせて呼ぶと、再生中に別の区間を選んで編集できなくなる。</summary>
