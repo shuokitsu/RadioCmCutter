@@ -1,11 +1,23 @@
-<Window x:Class="RadioCmCutter.App.MainWindow"
+﻿<Window x:Class="RadioCmCutter.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:RadioCmCutter.App"
+        xmlns:sys="clr-namespace:System;assembly=System.Runtime"
         mc:Ignorable="d"
         Title="ラジオCM自動カット" Height="800" Width="1150" Icon="AppIcon.ico">
+    <Window.Resources>
+        <!-- 区間の種別。誤りの分析（どの種類の区切りを見逃しているか）に使う -->
+        <x:Array x:Key="SegmentLabels" Type="sys:String">
+            <sys:String>音楽</sys:String>
+            <sys:String>トーク</sys:String>
+            <sys:String>トーク+BGM</sys:String>
+            <sys:String>ジングル</sys:String>
+            <sys:String>CM</sys:String>
+            <sys:String>無音</sys:String>
+        </x:Array>
+    </Window.Resources>
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -91,7 +103,8 @@
                         <Button x:Name="MergeWithPreviousButton" Content="前と結合" Width="80" Margin="0,0,4,0" Click="MergeWithPreviousButton_Click"/>
                         <Button x:Name="MergeWithNextButton" Content="次と結合" Width="80" Margin="0,0,12,0" Click="MergeWithNextButton_Click"/>
                         <TextBlock Text="（波形をShift+クリックでもその位置で区切れます）" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="#555555"/>
-                        <Button x:Name="SaveGroundTruthButton" Content="正解として保存" Width="110" Margin="0,0,4,0" Click="SaveGroundTruthButton_Click"/>
+                        <Button x:Name="SaveGroundTruthButton" Content="正解として保存" Width="110" Margin="0,0,4,0" Click="SaveGroundTruthButton_Click"
+                                ToolTip="画面上の区切りを正解データとして保存します（自動保存はされません）。&#x0a;一部だけ確認した場合は、確認し終えた最後の行を選択してから押してください。&#x0a;その行の終わりまでを「確認済みの範囲」として記録します。"/>
                         <Button x:Name="EvaluateButton" Content="精度を測定" Width="90" Click="EvaluateButton_Click"/>
                     </StackPanel>
                 </StackPanel>
@@ -122,6 +135,8 @@
                         <DataGridTextColumn x:Name="EndTimeColumn" Header="終了" Binding="{Binding Segment.End}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="長さ(秒)" Binding="{Binding Segment.Duration.TotalSeconds, StringFormat=F1}" Width="90" IsReadOnly="True"/>
                         <DataGridTextColumn Header="検出理由" Binding="{Binding Kind}" Width="150" IsReadOnly="True"/>
+                        <DataGridComboBoxColumn Header="種別(手動)" SelectedItemBinding="{Binding UserLabel}"
+                                                ItemsSource="{StaticResource SegmentLabels}" Width="100"/>
                         <DataGridTextColumn Header="確信度" Binding="{Binding Confidence, StringFormat=P0}" Width="80" IsReadOnly="True"/>
                         <DataGridTextColumn Header="繰り返し回数" Binding="{Binding RepeatCount}" Width="100" IsReadOnly="True"/>
                     </DataGrid.Columns>

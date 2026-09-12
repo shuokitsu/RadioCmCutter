@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using RadioCmCutter.Core.Ffmpeg;
 using RadioCmCutter.Core.Models;
 
@@ -41,6 +41,10 @@ public sealed class TimelineSegmentRow : INotifyPropertyChanged
     public required bool IsDetectedCandidate { get; init; }
     public DetectionReason? Reason { get; init; }
 
+    /// <summary>ユーザーが付けた区間の種別（音楽／トーク／CM等）。
+    /// 検出には使わない。「どの種類の区切りを見逃しているか」を分析するための注釈。</summary>
+    public string? UserLabel { get; set; }
+
     /// <summary>ユーザーが手動で区切りを追加・結合した区間。
     /// 検出結果ではなく人の判断なので、表示で区別できるようにする（将来は検出精度の評価用の
     /// 正解データとしても使える）。</summary>
@@ -82,6 +86,7 @@ public sealed class TimelineSegmentRow : INotifyPropertyChanged
             RepeatCount = Math.Max(first.RepeatCount, second.RepeatCount),
             IsDetectedCandidate = first.IsDetectedCandidate || second.IsDetectedCandidate,
             Reason = first.Reason == second.Reason ? first.Reason : null,
+            UserLabel = first.UserLabel ?? second.UserLabel,
             IsUserEdited = true,
         };
 
@@ -94,6 +99,7 @@ public sealed class TimelineSegmentRow : INotifyPropertyChanged
             RepeatCount = RepeatCount,
             IsDetectedCandidate = IsDetectedCandidate,
             Reason = Reason,
+            UserLabel = UserLabel,
             IsUserEdited = true,
         };
 

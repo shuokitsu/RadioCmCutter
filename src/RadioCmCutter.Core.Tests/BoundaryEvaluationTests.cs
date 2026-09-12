@@ -161,6 +161,9 @@ public class BoundaryEvaluationTests
             Assert.Equal([12.82, 80.14, 378.26], loaded.BoundarySeconds);
             Assert.Equal("1:20-6:18は1曲", loaded.Note);
             Assert.Equal(7200.0, loaded.TotalDurationSeconds);
+
+            // 人が開いて確認・修正できるよう、日本語がエスケープされずそのまま書かれていること
+            Assert.Contains("1:20-6:18は1曲", System.IO.File.ReadAllText(path));
         }
         finally
         {

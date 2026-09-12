@@ -792,13 +792,33 @@ public partial class MainWindow : Window
     {
         if (_selectedItem is null) return;
 
+        var totalSeconds = _selectedItem.Result.TotalDuration.TotalSeconds;
+
+        // どこまで確認し終えたかを、選択中の行の終わりとして受け取る。
+        // ファイルの一部しか確認していないのに全体を採点対象にすると、未確認部分の検出が
+        // すべて「外れ」と数えられて適合率が意味を失うため。
+        var annotatedEnd = CandidatesDataGrid.SelectedItem is TimelineSegmentRow selected
+            ? selected.Segment.End.TotalSeconds
+            : totalSeconds;
+
+        var boundaries = GetTimelineBoundaries().Where(b => b <= annotatedEnd).ToList();
+
         var groundTruth = new BoundaryGroundTruth
         {
             SourceFileName = Path.GetFileName(_selectedItem.FilePath),
-            TotalDurationSeconds = _selectedItem.Result.TotalDuration.TotalSeconds,
-            BoundarySeconds = GetTimelineBoundaries(),
+            TotalDurationSeconds = totalSeconds,
+            BoundarySeconds = boundaries,
+            Segments = _selectedItem.TimelineRows
+                .Where(r => r.Segment.Start.TotalSeconds < annotatedEnd)
+                .Select(r => new LabeledSegment
+                {
+                    StartSeconds = r.Segment.Start.TotalSeconds,
+                    EndSeconds = Math.Min(r.Segment.End.TotalSeconds, annotatedEnd),
+                    Label = r.UserLabel,
+                })
+                .ToList(),
             AnnotatedRangeStartSeconds = 0,
-            AnnotatedRangeEndSeconds = _selectedItem.Result.TotalDuration.TotalSeconds,
+            AnnotatedRangeEndSeconds = annotatedEnd,
             SavedAtUtc = DateTime.UtcNow,
         };
 
@@ -807,7 +827,13 @@ public partial class MainWindow : Window
         {
             groundTruth.Save(path);
             StatusText.Text = "";
-            FooterStatusText.Text = $"区切り{groundTruth.BoundarySeconds.Count}件を正解として保存しました: {path}";
+
+            var isWholeFile = annotatedEnd >= totalSeconds - 0.001;
+            FooterStatusText.Text = isWholeFile
+                ? $"区切り{boundaries.Count}件を正解として保存しました（ファイル全体を確認済みとして記録）: {path}"
+                : $"区切り{boundaries.Count}件を正解として保存しました"
+                    + $"（確認済みの範囲を 0:00 〜 {FormatTime(TimeSpan.FromSeconds(annotatedEnd))} として記録。"
+                    + $"範囲は確認し終えた最後の行を選んでから保存すると変えられます）: {path}";
         }
         catch (Exception ex)
         {

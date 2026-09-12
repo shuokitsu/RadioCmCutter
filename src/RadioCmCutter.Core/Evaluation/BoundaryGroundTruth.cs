@@ -3,6 +3,16 @@ using System.Text.Json.Serialization;
 
 namespace RadioCmCutter.Core.Evaluation;
 
+/// <summary>種別を付けた区間。区切りの前後が何だったのかを残すために使う。</summary>
+public sealed class LabeledSegment
+{
+    public double StartSeconds { get; init; }
+    public double EndSeconds { get; init; }
+
+    /// <summary>音楽／トーク／トーク+BGM／ジングル／CM／無音 など。自由記述も許す。</summary>
+    public string? Label { get; init; }
+}
+
 /// <summary>
 /// ユーザーが確認・修正した「正解の区切り」。検出精度を測るためだけに使い、
 /// 検出処理には絶対に渡さない（渡すと答えを見ながら答案を書くことになり、精度が測れなくなる）。
@@ -30,6 +40,12 @@ public sealed class BoundaryGroundTruth
 
     public double? AnnotatedRangeEndSeconds { get; set; }
 
+    /// <summary>各区間の種別（音楽／トーク／CM等）。採点そのものには使わないが、
+    /// 「どの種類の区切りを見逃しているか」を分析するために残す。
+    /// 例えば曲→曲の区切りだけ取りこぼしているのか、トーク→曲は得意なのかが分かれば、
+    /// 直すべき仕組みを特定できる。</summary>
+    public List<LabeledSegment> Segments { get; init; } = [];
+
     /// <summary>後から見返したときのための覚え書き（「1:20-6:18は1曲」など）。</summary>
     public string? Note { get; set; }
 
@@ -39,6 +55,9 @@ public sealed class BoundaryGroundTruth
     {
         WriteIndented = true, // 人が中身を確認・手直しできるようにする
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // 既定では日本語が \uXXXX に変換されて読めなくなるため、そのまま書き出す。
+        // この正解ファイルは人が開いて確認・修正することを前提にしている。
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
     /// <summary>音声ファイルに対応する正解ファイルのパス（同じ場所に並べて置く）。
